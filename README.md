@@ -60,3 +60,7 @@ An Inno Setup script for the Windows installer lives at `installer.iss`.
 - The `pi` CLI on `PATH` (`npm install -g @earendil-works/pi-coding-agent`).
 - Windows 10/11, or a Linux desktop with GTK 3.
 - `git` for worktrees and diffs (optional).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
