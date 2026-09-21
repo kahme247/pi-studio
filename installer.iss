@@ -1,9 +1,17 @@
+; Build inputs resolve relative to this script, so no absolute paths are baked
+; in and the same file works on a CI runner.
+;
+; ISCC /DMyAppVersion=1.2.3 overrides the version below, which is how a release
+; tag drives the installer name.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
+
 #define MyAppName "Pi Studio"
-#define MyAppVersion "1.0.0"
 #define MyAppPublisher "Pi Studio"
 #define MyAppExeName "pi_studio.exe"
-#define SourceDir "C:\Users\Khaled\dev\pi_studio\build\windows\x64\runner\Release"
-#define OutputDir "C:\Users\Khaled\dev\pi_studio\dist"
+#define SourceDir SourcePath + "\build\windows\x64\runner\Release"
+#define OutputDir SourcePath + "\dist"
 
 [Setup]
 AppId={{E57D284B-9140-4A3C-9A52-82381F0E4F39}
@@ -13,7 +21,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir={#OutputDir}
-OutputBaseFilename=PiStudio-1.0.0-Setup
+OutputBaseFilename=PiStudio-{#MyAppVersion}-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
