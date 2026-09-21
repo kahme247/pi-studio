@@ -10,8 +10,11 @@ import 'git/git_ops.dart';
 import 'pi/session_store.dart';
 import 'platform/folder_picker.dart';
 import 'platform/window_controls.dart';
+import 'settings/pi_settings.dart';
+import 'settings/settings_page.dart';
 import 'state/projects_store.dart';
 import 'state/session_controller.dart';
+import 'ui/smooth_scroll.dart';
 
 void main() => runApp(const PiStudioApp());
 
@@ -62,7 +65,15 @@ ThemeData _appTheme() {
     hintColor: ink5,
     scaffoldBackgroundColor: ink0,
     visualDensity: VisualDensity.compact,
-    splashFactory: InkSparkle.splashFactory,
+    // InkSparkle builds a per-tap GPU shader. That is a touch idiom: it costs
+    // frames here and reads as noise under a mouse. A cheap ripple plus the
+    // hover states below carry pointer feedback instead.
+    splashFactory: InkRipple.splashFactory,
+    // Bare InkWell (the majority of this UI) falls back to these, so one line
+    // here gives every hand-rolled control a hover/focus response.
+    hoverColor: ink9.withValues(alpha: 0.055),
+    highlightColor: ink9.withValues(alpha: 0.04),
+    focusColor: magenta.withValues(alpha: 0.16),
     dividerTheme: const DividerThemeData(color: rule, thickness: 1, space: 1),
     scrollbarTheme: ScrollbarThemeData(
       thickness: const WidgetStatePropertyAll(5),
@@ -143,6 +154,8 @@ ThemeData _appTheme() {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(8),
         ),
+        overlayColor: ink0.withValues(alpha: 0.14),
+        animationDuration: const Duration(milliseconds: 110),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
@@ -150,6 +163,8 @@ ThemeData _appTheme() {
         minimumSize: const Size(0, 30),
         padding: const EdgeInsets.symmetric(horizontal: 10),
         textStyle: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500),
+        overlayColor: ink9.withValues(alpha: 0.08),
+        animationDuration: const Duration(milliseconds: 110),
       ),
     ),
     iconButtonTheme: IconButtonThemeData(
@@ -157,6 +172,10 @@ ThemeData _appTheme() {
         minimumSize: const Size(30, 30),
         iconSize: 18,
         padding: EdgeInsets.zero,
+        // Without an overlay an IconButton looks inert until you press it.
+        hoverColor: ink9.withValues(alpha: 0.09),
+        highlightColor: ink9.withValues(alpha: 0.11),
+        animationDuration: const Duration(milliseconds: 110),
       ),
     ),
     listTileTheme: const ListTileThemeData(
@@ -198,6 +217,213 @@ Duration _motion(BuildContext context, [int ms = 140]) =>
         ? Duration.zero
         : Duration(milliseconds: ms);
 
+/// Pointer feedback for the small hand-rolled controls in this UI: declares the
+/// click cursor and eases a tint in on hover. A bare [InkWell] gives no
+/// continuous response under a mouse, which is what reads as "inert".
+///
+/// This paints its own background rather than relying on ink splashes, because
+/// the sidebar and rail sit on opaque containers — an ink splash would be
+/// painted on the Material *behind* them and never seen.
+class _HoverTint extends StatefulWidget {
+  const _HoverTint({
+    required this.child,
+    this.onTap,
+    this.radius = 8,
+    this.alpha = 0.06,
+    this.baseColor,
+  });
+
+  final Widget child;
+  final VoidCallback? onTap;
+  final double radius;
+  final double alpha;
+
+  /// Static fill under the hover tint, e.g. a selected row's highlight.
+  final Color? baseColor;
+
+  @override
+  State<_HoverTint> createState() => _HoverTintState();
+}
+
+class _HoverTintState extends State<_HoverTint> {
+  var _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final tint = theme.colorScheme.onSurface;
+    final interactive = widget.onTap != null;
+    final base = widget.baseColor ?? Colors.transparent;
+    // Compose rather than replace, so a selected row still responds to hover.
+    final color = _hovered && interactive
+        ? Color.alphaBlend(tint.withValues(alpha: widget.alpha), base)
+        : base;
+    return MouseRegion(
+      cursor: interactive ? SystemMouseCursors.click : MouseCursor.defer,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: interactive
+            ? HitTestBehavior.opaque
+            : HitTestBehavior.deferToChild,
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: _motion(context, 110),
+          curve: Curves.easeOut,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(widget.radius),
+          ),
+          child: widget.child,
+        ),
+      ),
+    );
+  }
+}
+
+/// Block caret pinned to the tail of an assistant message that is still
+/// streaming, so the transcript reads as live rather than settled.
+class _StreamCaret extends StatefulWidget {
+  const _StreamCaret({required this.color});
+
+  final Color color;
+
+  @override
+  State<_StreamCaret> createState() => _StreamCaretState();
+}
+
+class _StreamCaretState extends State<_StreamCaret>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 850),
+  )..repeat(reverse: true);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Hold it mid-blink rather than animate when the OS asks for less motion.
+    if (MediaQuery.of(context).disableAnimations) {
+      _controller.stop();
+      _controller.value = 0.6;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.2, end: 1).animate(
+        CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+      ),
+      child: Container(
+        width: 4,
+        height: 9,
+        margin: const EdgeInsets.only(left: 3, top: 3),
+        decoration: BoxDecoration(
+          color: widget.color,
+          borderRadius: BorderRadius.circular(1),
+        ),
+      ),
+    );
+  }
+}
+
+/// Rail tab: the active tab holds a primary tint, inactive tabs ease toward it
+/// on hover so the tab strip responds under the pointer.
+class _RailTabButton extends StatefulWidget {
+  const _RailTabButton({
+    required this.icon,
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  State<_RailTabButton> createState() => _RailTabButtonState();
+}
+
+class _RailTabButtonState extends State<_RailTabButton> {
+  var _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final active = widget.active;
+    final background = active
+        ? theme.colorScheme.primary.withValues(alpha: 0.14)
+        : (_hovered
+            ? theme.colorScheme.onSurface.withValues(alpha: 0.07)
+            : Colors.transparent);
+    final iconColor = active
+        ? theme.colorScheme.primary
+        : (_hovered ? theme.colorScheme.onSurface : theme.hintColor);
+    final labelColor = active
+        ? theme.colorScheme.primary
+        : (_hovered
+            ? theme.colorScheme.onSurface
+            : theme.colorScheme.onSurfaceVariant);
+    final duration = _motion(context, 120);
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 2),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: duration,
+            curve: Curves.easeOut,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            decoration: BoxDecoration(
+              color: background,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              children: [
+                TweenAnimationBuilder<Color?>(
+                  tween: ColorTween(end: iconColor),
+                  duration: duration,
+                  curve: Curves.easeOut,
+                  builder: (context, color, _) =>
+                      Icon(widget.icon, size: 14, color: color),
+                ),
+                const SizedBox(width: 6),
+                TweenAnimationBuilder<Color?>(
+                  tween: ColorTween(end: labelColor),
+                  duration: duration,
+                  curve: Curves.easeOut,
+                  builder: (context, color, _) => Text(
+                    widget.label,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: color,
+                      fontWeight:
+                          active ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Sidebar card indicator state.
 enum _CardStatus { idle, running, unread, saved }
 
@@ -214,7 +440,12 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final List<SessionController> _sessions = [];
   final _composer = TextEditingController();
-  final _scroll = ScrollController();
+  late final _scroll = SmoothScrollController(
+    wheelDuration: () => _wheelDuration,
+  );
+
+  /// Wheel-scroll ease; zeroed when the OS asks for reduced motion.
+  var _wheelDuration = const Duration(milliseconds: 160);
   final _projectsStore = PathListStore.open('projects.json');
   final _archiveStore = PathListStore.open('archived.json');
   final List<String> _projects = [];
@@ -224,6 +455,8 @@ class _HomePageState extends State<HomePage> {
   String? _lastProjectDir;
   var _showRail = false;
   _RailTab _railTab = _RailTab.review;
+  var _showSettings = false;
+  final _piSettings = PiSettings();
   var _loadingOlder = false;
   var _sidebarWidth = 320.0;
   var _railWidth = 520.0;
@@ -256,6 +489,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _wheelDuration = MediaQuery.of(context).disableAnimations
+        ? Duration.zero
+        : const Duration(milliseconds: 160);
+  }
+
+  @override
   void dispose() {
     for (final session in _sessions) {
       session.removeListener(_onControllerChanged);
@@ -265,6 +506,7 @@ class _HomePageState extends State<HomePage> {
     _scroll.dispose();
     _searchController.dispose();
     _branchSearchController.dispose();
+    _piSettings.dispose();
     super.dispose();
   }
 
@@ -499,8 +741,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _menuDots(MenuController controller) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(4),
+    return _HoverTint(
+      radius: 4,
+      alpha: 0.09,
       onTap: () => controller.isOpen ? controller.close() : controller.open(),
       child: const Padding(
         padding: EdgeInsets.all(3),
@@ -761,12 +1004,24 @@ class _HomePageState extends State<HomePage> {
             padding: const EdgeInsets.fromLTRB(8, 6, 6, 6),
             child: Row(
               children: [
-                _railTabButton(context, _RailTab.review,
-                    Icons.difference_outlined, 'Review'),
-                _railTabButton(context, _RailTab.files,
-                    Icons.folder_outlined, 'Files'),
-                _railTabButton(context, _RailTab.terminal,
-                    Icons.terminal, 'Terminal'),
+                _RailTabButton(
+                  icon: Icons.difference_outlined,
+                  label: 'Review',
+                  active: _railTab == _RailTab.review,
+                  onTap: () => setState(() => _railTab = _RailTab.review),
+                ),
+                _RailTabButton(
+                  icon: Icons.folder_outlined,
+                  label: 'Files',
+                  active: _railTab == _RailTab.files,
+                  onTap: () => setState(() => _railTab = _RailTab.files),
+                ),
+                _RailTabButton(
+                  icon: Icons.terminal,
+                  label: 'Terminal',
+                  active: _railTab == _RailTab.terminal,
+                  onTap: () => setState(() => _railTab = _RailTab.terminal),
+                ),
                 const Spacer(),
                 IconButton(
                   onPressed: () => setState(() => _showRail = false),
@@ -783,7 +1038,19 @@ class _HomePageState extends State<HomePage> {
           const Divider(height: 1),
           Expanded(
             child: AnimatedSwitcher(
-              duration: _motion(context, 140),
+              duration: _motion(context, 180),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeIn,
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: SlideTransition(
+                  position: Tween<Offset>(
+                    begin: const Offset(0.02, 0),
+                    end: Offset.zero,
+                  ).animate(animation),
+                  child: child,
+                ),
+              ),
               child: KeyedSubtree(
                 key: ValueKey(_railTab),
                 child: switch (_railTab) {
@@ -799,53 +1066,6 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _railTabButton(
-    BuildContext context,
-    _RailTab tab,
-    IconData icon,
-    String label,
-  ) {
-    final theme = Theme.of(context);
-    final active = _railTab == tab;
-    return Padding(
-      padding: const EdgeInsets.only(right: 2),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(6),
-        onTap: () => setState(() => _railTab = tab),
-        child: AnimatedContainer(
-          duration: _motion(context, 120),
-          curve: Curves.easeOut,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-          decoration: BoxDecoration(
-            color: active
-                ? theme.colorScheme.primary.withValues(alpha: 0.14)
-                : null,
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                icon,
-                size: 14,
-                color: active ? theme.colorScheme.primary : theme.hintColor,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: active
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.onSurfaceVariant,
-                  fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -978,58 +1198,25 @@ class _HomePageState extends State<HomePage> {
       Platform.environment['USER'] ??
       'Khaled';
 
-  void _showSettingsDialog(BuildContext context) {
-    final theme = Theme.of(context);
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Settings'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Pi Studio v1.0.0',
-                style: theme.textTheme.titleSmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Native desktop coding agent for Pi',
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.hintColor),
-              ),
-              const SizedBox(height: 16),
-              const Divider(height: 1),
-              const SizedBox(height: 16),
-              Text('Projects', style: theme.textTheme.labelSmall),
-              const SizedBox(height: 4),
-              Text(
-                '${_projects.length} saved project folders',
-                style: theme.textTheme.bodySmall,
-              ),
-              const SizedBox(height: 12),
-              Text('Session Storage', style: theme.textTheme.labelSmall),
-              const SizedBox(height: 4),
-              Text(
-                piSessionsDir().path,
-                style: const TextStyle(
-                  fontFamily: 'GeistMono',
-                  fontSize: 11.5,
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
+  /// Provider/model pairs the open session reported, for the settings model
+  /// picker. Empty when nothing is connected, which makes the page fall back to
+  /// a free-text field.
+  List<({String provider, String id, String label})> _availableModels() {
+    final session = _selected;
+    if (session == null) return const [];
+    final seen = <String>{};
+    final out = <({String provider, String id, String label})>[];
+    for (final model in session.models) {
+      final id = '${model['id'] ?? ''}';
+      if (id.isEmpty || !seen.add(id)) continue;
+      out.add((
+        provider: '${model['provider'] ?? ''}',
+        id: id,
+        label: '${model['name'] ?? id}',
+      ));
+    }
+    out.sort((a, b) => a.label.toLowerCase().compareTo(b.label.toLowerCase()));
+    return out;
   }
 
   void _toast(String message) {
@@ -1364,6 +1551,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final session = _selected;
     return Scaffold(
       body: Stack(
@@ -1384,7 +1572,19 @@ class _HomePageState extends State<HomePage> {
                     ),
                     Expanded(
                       child: AnimatedSwitcher(
-                        duration: _motion(context, 160),
+                        duration: _motion(context, 200),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeIn,
+                        transitionBuilder: (child, animation) => FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(
+                            position: Tween<Offset>(
+                              begin: const Offset(0, 0.012),
+                              end: Offset.zero,
+                            ).animate(animation),
+                            child: child,
+                          ),
+                        ),
                         child: KeyedSubtree(
                           key: ValueKey(_selected),
                           child: _chatPane(context),
@@ -1419,6 +1619,43 @@ class _HomePageState extends State<HomePage> {
               ),
             ],
           ),
+          // Settings is a full page rather than a dialog: it is long, it
+          // scrolls, and the edits need room to be reviewed before they reach
+          // pi's settings.json. It sits below the title bar so the window
+          // controls, and the resize handles added after it, stay live.
+          if (_showSettings)
+            Positioned(
+              top: 34,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: CallbackShortcuts(
+                bindings: {
+                  const SingleActivator(LogicalKeyboardKey.escape): () =>
+                      setState(() => _showSettings = false),
+                },
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0, end: 1),
+                  duration: _motion(context, 220),
+                  curve: Curves.easeOutCubic,
+                  builder: (context, t, child) => Opacity(
+                    opacity: t,
+                    child: Transform.translate(
+                      offset: Offset(0, 10 * (1 - t)),
+                      child: child,
+                    ),
+                  ),
+                  child: ColoredBox(
+                    color: theme.colorScheme.surface,
+                    child: SettingsPage(
+                      settings: _piSettings,
+                      availableModels: _availableModels(),
+                      onClose: () => setState(() => _showSettings = false),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           ..._resizeHandles(),
         ],
       ),
@@ -1521,7 +1758,7 @@ class _HomePageState extends State<HomePage> {
                   padding: EdgeInsets.zero,
                   constraints:
                       const BoxConstraints(minWidth: 28, minHeight: 28),
-                  onPressed: () => _showSettingsDialog(context),
+                  onPressed: () => setState(() => _showSettings = true),
                 ),
               ],
             ),
@@ -1539,9 +1776,9 @@ class _HomePageState extends State<HomePage> {
     bool trailingChevron = false,
   }) {
     final theme = Theme.of(context);
-    return InkWell(
+    return _HoverTint(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
+      radius: 6,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
         child: Row(
@@ -1779,6 +2016,23 @@ class _HomePageState extends State<HomePage> {
                                             const Duration(milliseconds: 300),
                                         curve: Curves.easeOutCubic,
                                       );
+                                      // Row heights vary wildly (code blocks,
+                                      // diffs), so a ratio estimate lands short
+                                      // or long. The target is inside the cache
+                                      // window now, so correct against its real
+                                      // offset instead of leaving it approximate.
+                                      await WidgetsBinding.instance.endOfFrame;
+                                      final landed = key?.currentContext;
+                                      if (landed != null && landed.mounted) {
+                                        await Scrollable.ensureVisible(
+                                          landed,
+                                          duration: const Duration(
+                                            milliseconds: 160,
+                                          ),
+                                          curve: Curves.easeOutCubic,
+                                          alignment: 0.05,
+                                        );
+                                      }
                                     }
                                     await Future.delayed(
                                       const Duration(milliseconds: 100),
@@ -1824,8 +2078,17 @@ class _HomePageState extends State<HomePage> {
                                 },
                                 child: ListView.builder(
                                   controller: _scroll,
+                                  // Was 50000px, which kept almost every row of
+                                  // a long session built and laid out on every
+                                  // scroll frame. Each markdown block is a
+                                  // SelectableText — a live EditableText with
+                                  // its own selection machinery — so hundreds
+                                  // of them alive made the transcript advance in
+                                  // visible jumps. A screen of slack above and
+                                  // below is enough for smooth scroll-back, and
+                                  // turn jumps correct themselves (see below).
                                   scrollCacheExtent:
-                                      const ScrollCacheExtent.pixels(50000.0),
+                                      const ScrollCacheExtent.pixels(1200.0),
                                   padding:
                                       const EdgeInsets.fromLTRB(16, 16, 16, 24),
                                   itemCount: rows.length,
@@ -1854,7 +2117,13 @@ class _HomePageState extends State<HomePage> {
                                         );
                                       }
                                     }
-                                    return _ChatItemView(item, key: key);
+                                    return _ChatItemView(
+                                      item,
+                                      key: key,
+                                      live: session.streaming &&
+                                          item.kind == ItemKind.assistant &&
+                                          index == rows.length - 1,
+                                    );
                                   },
                                 ),
                               ),
@@ -1982,9 +2251,9 @@ class _FooterChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final chip = InkWell(
+    final chip = _HoverTint(
+      radius: 6,
       onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
         child: Row(
@@ -2269,12 +2538,14 @@ class _DiffViewState extends State<_DiffView> {
           '?' => theme.hintColor,
           _ => theme.colorScheme.primary,
         };
-        return InkWell(
+        return _HoverTint(
+          radius: 0,
+          alpha: 0.07,
+          baseColor: selected
+              ? theme.colorScheme.primary.withValues(alpha: 0.12)
+              : null,
           onTap: () => _select(file.path),
-          child: Container(
-            color: selected
-                ? theme.colorScheme.primary.withValues(alpha: 0.12)
-                : null,
+          child: Padding(
             padding: const EdgeInsets.fromLTRB(8, 5, 8, 5),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2395,7 +2666,9 @@ class _FileTreeState extends State<_FileTree> {
       final isDir = entry is Directory;
       final expanded = _expanded.contains(entry.path);
       widgets.add(
-        InkWell(
+        _HoverTint(
+          radius: 0,
+          alpha: 0.07,
           onTap: () => isDir ? _toggle(entry.path) : _openFile(entry.path),
           child: Padding(
             padding: EdgeInsets.fromLTRB(10 + depth * 12.0, 4, 8, 4),
@@ -2868,18 +3141,60 @@ class _SessionRowState extends State<_SessionRow> {
   }
 }
 
-class _ChatItemView extends StatelessWidget {
-  const _ChatItemView(this.item, {super.key});
+class _ChatItemView extends StatefulWidget {
+  const _ChatItemView(this.item, {super.key, this.live = false});
 
   final ChatItem item;
 
+  /// True for the assistant message that tokens are still arriving in.
+  final bool live;
+
+  @override
+  State<_ChatItemView> createState() => _ChatItemViewState();
+}
+
+class _ChatItemViewState extends State<_ChatItemView> {
+  Widget? _cached;
+
+  // Compared by identity: ChatItem is mutated in place as tokens and tool
+  // results land, so a changed field shows up as a new String instance.
+  ChatItem? _item;
+  Object? _text;
+  Object? _result;
+  bool _done = false;
+  bool _errored = false;
+  bool _live = false;
+
+  /// [_item] guards against the builder reusing this element for a different
+  /// row — which happens when older history is prepended and indices shift.
+  bool get _unchanged =>
+      identical(_item, widget.item) &&
+      identical(_text, widget.item.text) &&
+      identical(_result, widget.item.result) &&
+      _done == widget.item.isDone &&
+      _errored == widget.item.isError &&
+      _live == widget.live;
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return _Appear(item: item, child: _body(context, theme));
+    // A streaming turn notifies the whole page ~16x/second. Handing back the
+    // identical widget for every settled row lets Flutter skip those subtrees,
+    // which keeps markdown re-parsing to the single message that changed.
+    if (_cached != null && _unchanged) return _cached!;
+    _item = widget.item;
+    _text = widget.item.text;
+    _result = widget.item.result;
+    _done = widget.item.isDone;
+    _errored = widget.item.isError;
+    _live = widget.live;
+    return _cached = _Appear(
+      item: widget.item,
+      child: _body(context, Theme.of(context)),
+    );
   }
 
   Widget _body(BuildContext context, ThemeData theme) {
+    final item = widget.item;
     switch (item.kind) {
       case ItemKind.user:
         return Padding(
@@ -2914,7 +3229,7 @@ class _ChatItemView extends StatelessWidget {
           ),
         );
       case ItemKind.assistant:
-        return _AssistantMessageView(item: item);
+        return _AssistantMessageView(item: item, live: widget.live);
       case ItemKind.event:
         return Padding(
           padding: const EdgeInsets.only(bottom: 10),
@@ -3021,9 +3336,12 @@ class _ChatItemView extends StatelessWidget {
 }
 
 class _AssistantMessageView extends StatefulWidget {
-  const _AssistantMessageView({required this.item});
+  const _AssistantMessageView({required this.item, this.live = false});
 
   final ChatItem item;
+
+  /// True while this message is the one still being written.
+  final bool live;
 
   @override
   State<_AssistantMessageView> createState() => _AssistantMessageViewState();
@@ -3049,6 +3367,13 @@ class _AssistantMessageViewState extends State<_AssistantMessageView> {
               selectable: true,
               styleSheet: _markdownStyleSheet(theme),
             ),
+            // A caret under the growing text: without it a slow turn looks
+            // like a finished message rather than one still being written.
+            if (widget.live)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: _StreamCaret(color: theme.colorScheme.primary),
+              ),
             const SizedBox(height: 4),
             AnimatedOpacity(
               opacity: _hovered ? 1.0 : 0.0,
@@ -3112,50 +3437,70 @@ class _AssistantMessageViewState extends State<_AssistantMessageView> {
   }
 }
 
-class _AccessPill extends StatelessWidget {
+class _AccessPill extends StatefulWidget {
   const _AccessPill({required this.session});
 
   final SessionController session;
 
   @override
+  State<_AccessPill> createState() => _AccessPillState();
+}
+
+class _AccessPillState extends State<_AccessPill> {
+  var _hovered = false;
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final full = session.fullAccess;
+    final full = widget.session.fullAccess;
     return Tooltip(
       message: full
           ? 'Full access: auto-executes tools'
           : 'Ask first: confirms tool calls',
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: session.toggleAccess,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest
-                .withValues(alpha: 0.4),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: theme.dividerColor),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                full ? Icons.lock_open_outlined : Icons.pan_tool_outlined,
-                size: 13,
-                color:
-                    full ? theme.colorScheme.secondary : theme.hintColor,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.session.toggleAccess,
+          child: AnimatedContainer(
+            duration: _motion(context, 120),
+            curve: Curves.easeOut,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            // The pill paints its own background, so an Ink splash on the
+            // Material behind it would be hidden — animate the fill instead.
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest
+                  .withValues(alpha: _hovered ? 0.75 : 0.4),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: _hovered
+                    ? theme.colorScheme.outline.withValues(alpha: 0.45)
+                    : theme.dividerColor,
               ),
-              const SizedBox(width: 5),
-              Text(
-                full ? 'Full access' : 'Ask first',
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: full
-                      ? theme.colorScheme.onSurface
-                      : theme.hintColor,
-                  fontWeight: FontWeight.w500,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  full ? Icons.lock_open_outlined : Icons.pan_tool_outlined,
+                  size: 13,
+                  color:
+                      full ? theme.colorScheme.secondary : theme.hintColor,
                 ),
-              ),
-            ],
+                const SizedBox(width: 5),
+                Text(
+                  full ? 'Full access' : 'Ask first',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: full
+                        ? theme.colorScheme.onSurface
+                        : theme.hintColor,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -3743,8 +4088,9 @@ class _ContextRingState extends State<_ContextRing> {
         message: percent == null
             ? 'Context usage'
             : 'Context ${percent.toStringAsFixed(0)}%',
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
+        child: _HoverTint(
+          radius: 20,
+          alpha: 0.08,
           onTap: () {
             if (controller.isOpen) {
               controller.close();
@@ -4064,7 +4410,8 @@ class _SessionFileRow extends StatelessWidget {
           Expanded(
             child: Tooltip(
               message: path,
-              child: InkWell(
+              child: _HoverTint(
+                radius: 4,
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: path));
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -4186,33 +4533,63 @@ class _SendButton extends StatefulWidget {
 
 class _SendButtonState extends State<_SendButton> {
   var _pressed = false;
+  var _hovered = false;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return AnimatedScale(
-      scale: _pressed ? 0.94 : 1,
-      duration: _motion(context, 90),
-      child: Material(
-        color: widget.enabled
-            ? theme.colorScheme.primary
-            : theme.colorScheme.surfaceContainerHighest,
-        shape: const CircleBorder(),
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTapDown: (_) => setState(() => _pressed = true),
-          onTapCancel: () => setState(() => _pressed = false),
-          onTapUp: (_) => setState(() => _pressed = false),
-          onTap: widget.enabled ? widget.onTap : null,
-          child: SizedBox(
-            width: 36,
-            height: 36,
-            child: Icon(
-              Icons.arrow_upward,
-              size: 18,
-              color: widget.enabled
-                  ? theme.colorScheme.onPrimary
-                  : theme.hintColor,
+    final enabled = widget.enabled;
+    final lifted = enabled && _hovered;
+    final duration = _motion(context, 120);
+
+    return MouseRegion(
+      cursor: enabled ? SystemMouseCursors.click : MouseCursor.defer,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedScale(
+        scale: _pressed ? 0.94 : (lifted ? 1.05 : 1),
+        duration: duration,
+        curve: Curves.easeOut,
+        child: AnimatedContainer(
+          duration: duration,
+          curve: Curves.easeOut,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: lifted
+                ? [
+                    BoxShadow(
+                      color:
+                          theme.colorScheme.primary.withValues(alpha: 0.36),
+                      blurRadius: 14,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                : const [],
+          ),
+          child: Material(
+            color: enabled
+                ? theme.colorScheme.primary
+                : theme.colorScheme.surfaceContainerHighest,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTapDown:
+                  enabled ? (_) => setState(() => _pressed = true) : null,
+              onTapCancel:
+                  enabled ? () => setState(() => _pressed = false) : null,
+              onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
+              onTap: enabled ? widget.onTap : null,
+              child: SizedBox(
+                width: 36,
+                height: 36,
+                child: Icon(
+                  Icons.arrow_upward,
+                  size: 18,
+                  color: enabled
+                      ? theme.colorScheme.onPrimary
+                      : theme.hintColor,
+                ),
+              ),
             ),
           ),
         ),
@@ -4379,10 +4756,11 @@ class _AgentSettingsMenuState extends State<_AgentSettingsMenu> {
           ),
         ),
       ],
-      builder: (context, controller, child) => InkWell(
-        borderRadius: BorderRadius.circular(8),
+      builder: (context, controller, child) => _HoverTint(
+        radius: 8,
+        alpha: 0.08,
         onTap: () => controller.isOpen ? controller.close() : controller.open(),
-        child: child,
+        child: child ?? const SizedBox.shrink(),
       ),
       child: _MenuLabel(label: modelName, secondary: level),
     );
