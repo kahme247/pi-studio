@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pi_studio/settings/pi_models.dart';
 import 'package:pi_studio/settings/pi_settings.dart';
 import 'package:pi_studio/settings/settings_page.dart';
 
@@ -13,6 +14,13 @@ import 'package:pi_studio/settings/settings_page.dart';
 void main() {
   testWidgets('renders every section from an empty store', (tester) async {
     final settings = PiSettings.inMemory();
+    // pi writes `{"providers": {}}` on a clean install, so the Providers
+    // section has to cope with an empty map rather than a missing one.
+    final modelsConfig = PiModels.inMemory(
+      data: {
+        'providers': <String, dynamic>{},
+      },
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -20,6 +28,7 @@ void main() {
         home: Scaffold(
           body: SettingsPage(
             settings: settings,
+            models: modelsConfig,
             onClose: () {},
           ),
         ),

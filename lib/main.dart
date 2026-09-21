@@ -10,6 +10,7 @@ import 'git/git_ops.dart';
 import 'pi/session_store.dart';
 import 'platform/folder_picker.dart';
 import 'platform/window_controls.dart';
+import 'settings/pi_models.dart';
 import 'settings/pi_settings.dart';
 import 'settings/settings_page.dart';
 import 'state/projects_store.dart';
@@ -18,18 +19,39 @@ import 'ui/smooth_scroll.dart';
 
 void main() => runApp(const PiStudioApp());
 
-/// omp.sh inspired theme: pure pitch black background (#000000),
-/// elevated ink surfaces (#0A0A0C), crisp off-white typography (#F7F7F8),
-/// omp magenta (#FF3B88) as primary accent, and cyan (#38BDF8) as secondary.
+/// Accent for "this session is running", sampled from the reference UI.
+///
+/// That UI uses it for its live indicator and nothing else, so it is wired to
+/// the same meaning here rather than promoted to the brand accent.
+const liveGreen = Color(0xFF00C950);
+
+/// Added lines and `+N` counts.
+///
+/// Deliberately a muted green rather than [liveGreen]: a vivid tone works as a
+/// small indicator but is garish behind a wall of diff text, and the two mean
+/// different things — "working" versus "added".
+const diffAdded = Color(0xFF5EA86D);
+
+/// Dark theme sampled from a reference UI rather than eyeballed.
+///
+/// Two near-black surfaces instead of one, a three-step text ramp, and a
+/// hairline border. `#121216` and `#18191B` are uniform fills covering ~93% of
+/// that screenshot, `#2F2F37` is the 1px seam between its two panes, and
+/// `#B0B4BA` / `#FCFCFD` are its two text tones.
+///
+/// The brand accent stays magenta: the reference's chrome is entirely neutral,
+/// so borrowing its greys does not mean borrowing an accent it does not have.
 ThemeData _appTheme() {
-  const ink0 = Color(0xFF000000);
-  const ink1 = Color(0xFF0A0A0C);
-  const ink5 = Color(0xFF73737A);
-  const ink7 = Color(0xFFCBCCD2);
-  const ink9 = Color(0xFFF7F7F8);
+  const ink0 = Color(0xFF121216); // main pane, transcript
+  const ink1 = Color(0xFF18191B); // sidebar, rail, cards, menus
+  const ink2 = Color(0xFF202226); // composer, inputs, raised inside a card
+  const ink3 = Color(0xFF27292C); // selected row, chips, toggles
+  const ink5 = Color(0xFF8E9298); // tertiary: hints, labels, outlines
+  const ink7 = Color(0xFFB0B4BA); // secondary text
+  const ink9 = Color(0xFFFCFCFD); // primary text
   const magenta = Color(0xFFD4688E);
   const cyan = Color(0xFF62ADC9);
-  const rule = Color(0x14FFFFFF);
+  const rule = Color(0xFF2F2F37); // hairline between surfaces
 
   const scheme = ColorScheme(
     brightness: Brightness.dark,
@@ -44,14 +66,20 @@ ThemeData _appTheme() {
     surface: ink0,
     onSurface: ink9,
     onSurfaceVariant: ink7,
-    surfaceContainerLowest: ink0,
-    surfaceContainerLow: Color(0xFF060608),
+    // In the reference the sidebar is lighter than the transcript, so the
+    // "lowest" token carries the higher value here. These are paint colours,
+    // not a literal Material elevation ramp.
+    surfaceContainerLowest: ink1,
+    surfaceContainerLow: ink1,
     surfaceContainer: ink1,
-    surfaceContainerHigh: Color(0xFF101014),
-    surfaceContainerHighest: Color(0xFF16161C),
+    surfaceContainerHigh: ink2,
+    surfaceContainerHighest: ink3,
     outline: ink5,
     outlineVariant: rule,
-    error: Color(0xFFCF5668),
+    // Lightened from the old #CF5668, which sat at 4.34 on a card — under the
+    // 4.5 that error text needs to stay readable. Kept clearly red so it is
+    // never mistaken for the magenta accent.
+    error: Color(0xFFE86E70),
     onError: ink9,
   );
 
@@ -100,7 +128,9 @@ ThemeData _appTheme() {
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: ink1,
+      // A step above the card it usually sits in, so the field reads as a
+      // field rather than a hole.
+      fillColor: ink2,
       hintStyle: const TextStyle(
         color: ink5,
         fontWeight: FontWeight.w400,
@@ -457,6 +487,7 @@ class _HomePageState extends State<HomePage> {
   _RailTab _railTab = _RailTab.review;
   var _showSettings = false;
   final _piSettings = PiSettings();
+  final _piModels = PiModels();
   var _loadingOlder = false;
   var _sidebarWidth = 320.0;
   var _railWidth = 520.0;
@@ -507,6 +538,7 @@ class _HomePageState extends State<HomePage> {
     _searchController.dispose();
     _branchSearchController.dispose();
     _piSettings.dispose();
+    _piModels.dispose();
     super.dispose();
   }
 
@@ -1649,6 +1681,7 @@ class _HomePageState extends State<HomePage> {
                     color: theme.colorScheme.surface,
                     child: SettingsPage(
                       settings: _piSettings,
+                      models: _piModels,
                       availableModels: _availableModels(),
                       onClose: () => setState(() => _showSettings = false),
                     ),
@@ -1846,9 +1879,7 @@ class _HomePageState extends State<HomePage> {
               Icon(
                 Icons.circle,
                 size: 8,
-                color: session.connected
-                    ? theme.colorScheme.secondary
-                    : theme.hintColor,
+                color: session.connected ? liveGreen : theme.hintColor,
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -1886,7 +1917,7 @@ class _HomePageState extends State<HomePage> {
                               TextSpan(
                                 text: '+${_formatCount(session.diffAdditions)}',
                                 style: const TextStyle(
-                                  color: Color(0xFF5EA86D),
+                                  color: diffAdded,
                                 ),
                               ),
                               const TextSpan(text: '  '),
@@ -1942,11 +1973,14 @@ class _HomePageState extends State<HomePage> {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Text(
+                              Text(
                                 '✳',
                                 style: TextStyle(
                                   fontSize: 26,
-                                  color: Color(0xFFE5855E),
+                                  // The brand accent, not the old warm orange:
+                                  // on a neutral palette a lone amber mark was
+                                  // the only hue that belonged to no system.
+                                  color: theme.colorScheme.primary,
                                   height: 1,
                                 ),
                               ),
@@ -2364,7 +2398,7 @@ class _DiffViewState extends State<_DiffView> {
               Text(
                 '+${_formatCount(additions)}',
                 style: theme.textTheme.labelSmall?.copyWith(
-                  color: const Color(0xFF5EA86D),
+                  color: diffAdded,
                   fontFamily: 'GeistMono',
                 ),
               ),
@@ -2436,7 +2470,7 @@ class _DiffViewState extends State<_DiffView> {
                 Text(
                   '+${_formatCount(selected.additions)}',
                   style: theme.textTheme.labelSmall?.copyWith(
-                    color: const Color(0xFF5EA86D),
+                    color: diffAdded,
                     fontFamily: 'GeistMono',
                   ),
                 ),
@@ -2463,7 +2497,7 @@ class _DiffViewState extends State<_DiffView> {
   }
 
   Widget _diffLineRow(ThemeData theme, DiffLine line) {
-    final green = const Color(0xFF5EA86D);
+    final green = diffAdded;
     final numberStyle = theme.textTheme.labelSmall?.copyWith(
       fontFamily: 'GeistMono',
       fontSize: 11.5,
@@ -2521,7 +2555,7 @@ class _DiffViewState extends State<_DiffView> {
   }
 
   Widget _fileList(ThemeData theme) {
-    final green = const Color(0xFF5EA86D);
+    final green = diffAdded;
     return ListView.builder(
       padding: const EdgeInsets.symmetric(vertical: 6),
       itemCount: _files.length,
@@ -3080,8 +3114,10 @@ class _SessionRowState extends State<_SessionRow> {
                             ? const SizedBox(
                                 width: 11,
                                 height: 11,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: liveGreen,
+                                ),
                               )
                             : widget.status == _CardStatus.unread
                                 ? Icon(
@@ -3996,7 +4032,6 @@ class _PulseBarsState extends State<_PulseBars>
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final reduce = MediaQuery.of(context).disableAnimations;
     return SizedBox(
       width: 16,
@@ -4014,7 +4049,9 @@ class _PulseBarsState extends State<_PulseBars>
                   width: 3,
                   height: 4 + _wave((t + i * 0.22) % 1) * 9,
                   decoration: BoxDecoration(
-                    color: theme.colorScheme.primary,
+                    // Working, not branding: same green the reference uses for
+                    // a live session.
+                    color: liveGreen,
                     borderRadius: BorderRadius.circular(1.5),
                   ),
                 ),
@@ -4293,6 +4330,8 @@ class _WindowButtonState extends State<_WindowButton> {
     final background = !_hovered
         ? Colors.transparent
         : widget.close
+            // Windows' own close-button red. Left out of the palette on
+            // purpose: it is a platform convention, not a design choice.
             ? const Color(0xFFC42B1C)
             : theme.colorScheme.onSurface.withValues(alpha: 0.08);
     final foreground = _hovered && widget.close

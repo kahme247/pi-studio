@@ -25,6 +25,13 @@ to `pi --mode rpc` over strict JSONL.
   model and thinking defaults, tools, compaction, retries, transport, interface,
   and package/skill/theme lists. Only the keys the page models are written; the
   rest of the file is preserved verbatim, with a `.bak` on every save.
+- **Providers & models** — add and edit custom providers and their models in
+  `~/.pi/agent/models.json`: base URL, API type, key, headers, and per-model
+  reasoning/vision/context/output/cost. A **Discover** button asks the provider
+  what it serves and fills the list from its own `/models` endpoint. Reuse a
+  built-in id to reroute it through a proxy instead of adding a second provider.
+  pi re-reads this file whenever its model picker opens, so edits need no
+  restart.
 
 ## Layout
 
@@ -38,8 +45,11 @@ lib/
   git/git_ops.dart              Worktrees, branches, diffs (shells out to git)
   platform/folder_picker.dart   Win32 IFileOpenDialog / zenity
   platform/window_controls.dart Win32 drag, resize, minimize/maximize/close
+  settings/json_file_store.dart  Shared read-modify-write JSON store
   settings/pi_settings.dart     Read-modify-write of pi's settings.json
   settings/settings_page.dart   The settings page UI
+  settings/pi_models.dart       Providers and models in pi's models.json
+  settings/model_discovery.dart Config-value resolution and /models discovery
 windows/runner/                 Custom frameless window (WM_NCCALCSIZE, hit-testing, DWM)
 tool/                           Small diagnostic scripts
 ```
@@ -64,13 +74,17 @@ An Inno Setup script for the Windows installer lives at `installer.iss`.
 ## Tests
 
 ```powershell
-flutter test --concurrency=1
+# Reliable: one file per invocation.
+Get-ChildItem test -Filter *_test.dart |
+  ForEach-Object { flutter test $_.FullName }
 ```
 
-`--concurrency=1` is not optional in practice. Compiling several test files in
-parallel intermittently kills a test isolate before it starts, which surfaces as
-`Connection closed before test suite loaded` or a run of `did not complete` with
-no exception. Serialising the compiler makes the suite deterministic.
+Run the whole directory in one `flutter test` and it goes flaky. With several
+files in flight the runner intermittently kills a test isolate — surfacing as
+`Connection closed before test suite loaded`, or a run of `did not complete`
+with no exception at all, sometimes for every test in a file that passes on its
+own. `--concurrency=1` helps but is not reliable; one invocation per file is.
+A single-file run has never been observed to fail this way.
 
 Two further constraints, both learned the hard way:
 

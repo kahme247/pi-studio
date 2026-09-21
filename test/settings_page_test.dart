@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pi_studio/settings/pi_models.dart';
 import 'package:pi_studio/settings/pi_settings.dart';
 import 'package:pi_studio/settings/settings_page.dart';
 
@@ -70,12 +71,42 @@ void main() {
       },
     );
 
+    final modelsConfig = PiModels.inMemory(
+      data: {
+        'providers': {
+          // A local OpenAI-compatible server: the common case.
+          'local-llm': {
+            'baseUrl': 'http://localhost:11434/v1',
+            'api': 'openai-completions',
+            'apiKey': r'$LOCAL_LLM_KEY',
+            'headers': {'x-tenant': 'acme'},
+            'models': [
+              {
+                'id': 'llama3.1:8b',
+                'name': 'Llama 3.1 8B',
+                'reasoning': false,
+                'input': ['text'],
+                'contextWindow': 128000,
+                'maxTokens': 32000,
+                'cost': {'input': 0.5, 'output': 1.5},
+              },
+              // Deliberately incomplete: no id, which validation must catch.
+              {'name': 'half-typed'},
+            ],
+          },
+          // Rerouting a built-in provider: no models array on purpose.
+          'anthropic': {'baseUrl': 'https://proxy.example.com'},
+        },
+      },
+    );
+
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData.dark(useMaterial3: true),
         home: Scaffold(
           body: SettingsPage(
             settings: settings,
+            models: modelsConfig,
             onClose: () {},
             availableModels: models,
           ),

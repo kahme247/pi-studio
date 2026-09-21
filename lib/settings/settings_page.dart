@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../pi/session_store.dart';
+import 'model_discovery.dart';
+import 'pi_models.dart';
 import 'pi_settings.dart';
 
 /// Reduced-motion-aware duration, matching the rest of the app.
@@ -15,6 +17,7 @@ Duration _ms(BuildContext context, [int ms = 140]) =>
 /// Sections of the settings page. Order here is the order in the nav rail.
 enum SettingsSection {
   agent('Agent', Icons.smart_toy_outlined),
+  providers('Providers', Icons.hub_outlined),
   tools('Tools', Icons.construction_outlined),
   compaction('Compaction', Icons.compress_outlined),
   sessions('Sessions', Icons.inventory_2_outlined),
@@ -59,12 +62,17 @@ const _builtinTools = [
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
     required this.settings,
+    required this.models,
     required this.onClose,
     this.availableModels = const [],
     super.key,
   });
 
   final PiSettings settings;
+
+  /// pi's custom-provider file, edited by the Providers section.
+  final PiModels models;
+
   final VoidCallback onClose;
 
   /// Provider/model pairs harvested from a live session, when one is open.
@@ -78,19 +86,25 @@ class _SettingsPageState extends State<SettingsPage> {
   var _section = SettingsSection.agent;
 
   PiSettings get _s => widget.settings;
+  PiModels get _m => widget.models;
+
+  /// The page has one Save button, so it covers both files.
+  bool get _dirty => _s.dirty || _m.dirty;
 
   @override
   void initState() {
     super.initState();
-    if (_s.loading && _s.keys.isEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _s.load());
-    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_s.loading && _s.keys.isEmpty) _s.load();
+      if (_m.loading && _m.keys.isEmpty) _m.load();
+    });
   }
 
   Future<void> _save() async {
     await _s.save();
+    await _m.save();
     if (!mounted) return;
-    final error = _s.error;
+    final error = _s.error ?? _m.error;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -103,11 +117,16 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Future<void> _discard() async {
+    await _s.discard();
+    await _m.discard();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return ListenableBuilder(
-      listenable: _s,
+      listenable: Listenable.merge([_s, _m]),
       builder: (context, _) {
         return Column(
           children: [
@@ -117,7 +136,7 @@ class _SettingsPageState extends State<SettingsPage> {
               // Only blank the page on the very first read. A refresh on
               // reopen keeps the current content up instead of flashing a
               // spinner over it.
-              child: _s.loading && _s.keys.isEmpty
+              child: _s.loading && _m.loading && _s.keys.isEmpty && _m.keys.isEmpty
                   ? const Center(child: CircularProgressIndicator())
                   : Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -177,17 +196,17 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const SizedBox(width: 10),
-          if (_s.dirty) ...[
+          if (_dirty) ...[
             Text('Unsaved changes', style: theme.textTheme.labelSmall),
             const SizedBox(width: 12),
             TextButton(
-              onPressed: _s.discard,
+              onPressed: _discard,
               child: const Text('Discard'),
             ),
           ],
           const SizedBox(width: 4),
           FilledButton(
-            onPressed: _s.dirty ? _save : null,
+            onPressed: _dirty ? _save : null,
             child: const Text('Save'),
           ),
         ],
@@ -246,6 +265,8 @@ class _SettingsPageState extends State<SettingsPage> {
     switch (_section) {
       case SettingsSection.agent:
         return _agent(theme);
+      case SettingsSection.providers:
+        return _providers(theme);
       case SettingsSection.tools:
         return _tools(theme);
       case SettingsSection.compaction:
@@ -379,6 +400,61 @@ class _SettingsPageState extends State<SettingsPage> {
               options: const ['ask', 'always', 'never'],
               onChanged: (v) => _s.write('defaultProjectTrust', v),
             ),
+          ),
+        ],
+      ),
+    ];
+  }
+
+  // ---------------------------------------------------------------- providers
+
+  List<Widget> _providers(ThemeData theme) {
+    final ids = _m.providerIds;
+    return [
+      _Card(
+        title: 'Custom providers',
+        description:
+            'Stored in models.json, which pi re-reads every time its model '
+            'picker opens — edits take effect without restarting a session. '
+            'Reusing a built-in id (anthropic, openai, openrouter…) reroutes '
+            'that provider rather than adding a second one.',
+        children: [
+          _Row(
+            label: 'Add a provider',
+            hint: 'Lower-case id, e.g. local-llm or my-proxy',
+            child: _AddProviderField(store: _m),
+          ),
+        ],
+      ),
+      if (ids.isEmpty)
+        _Card(
+          title: 'No custom providers yet',
+          description:
+              'models.json has an empty providers map. Anything added here '
+              'shows up in pi’s model picker beside the providers pi and your '
+              'extensions already register.',
+          children: const [],
+        ),
+      for (final id in ids)
+        _ProviderEditor(
+          key: ValueKey('provider:$id'),
+          store: _m,
+          id: id,
+          models: _m.modelsOf(id),
+        ),
+      _Card(
+        title: 'How this file fits together',
+        children: [
+          _InfoRow(label: 'File', value: _m.path, copyable: true),
+          _InfoRow(
+            label: 'Reloads',
+            value: 'Every time pi opens its model picker — no restart needed',
+          ),
+          _InfoRow(
+            label: 'Extension providers',
+            value:
+                'Owned by their npm packages with their own schemas; this page '
+                'leaves them untouched',
           ),
         ],
       ),
@@ -1336,6 +1412,8 @@ class _Entry extends StatefulWidget {
     required this.onChanged,
     this.hint = '',
     this.normalisePath = false,
+    this.obscure = false,
+    this.commitOnBlur = false,
   });
 
   final String value;
@@ -1345,6 +1423,15 @@ class _Entry extends StatefulWidget {
   /// Rewrites Windows backslashes on blur; JSON treats `\` as an escape.
   final bool normalisePath;
 
+  /// Hides the value behind a reveal toggle. Used for literal API keys;
+  /// `$ENV_VAR` and `!command` references stay readable because they are not
+  /// secret and hiding them makes them impossible to check.
+  final bool obscure;
+
+  /// Commits only on blur or submit. Needed where the value is a lookup key
+  /// rather than a value, so a half-typed intermediate must not be written.
+  final bool commitOnBlur;
+
   @override
   State<_Entry> createState() => _EntryState();
 }
@@ -1353,6 +1440,7 @@ class _EntryState extends State<_Entry> {
   late final TextEditingController _controller =
       TextEditingController(text: widget.value);
   final _focus = FocusNode();
+  var _revealed = false;
 
   @override
   void initState() {
@@ -1389,12 +1477,27 @@ class _EntryState extends State<_Entry> {
     return TextField(
       controller: _controller,
       focusNode: _focus,
+      obscureText: widget.obscure && !_revealed,
       // Commit per keystroke so Save enables while typing. A disabled Save
       // button cannot take focus, so a blur-to-commit field would leave the
       // user unable to save what they just typed.
-      onChanged: (text) => widget.onChanged(text.trim()),
+      onChanged: widget.commitOnBlur
+          ? null
+          : (text) => widget.onChanged(text.trim()),
       onSubmitted: (value) => widget.onChanged(value.trim()),
-      decoration: InputDecoration(hintText: widget.hint),
+      decoration: InputDecoration(
+        hintText: widget.hint,
+        suffixIcon: widget.obscure
+            ? IconButton(
+                tooltip: _revealed ? 'Hide' : 'Reveal',
+                iconSize: 15,
+                onPressed: () => setState(() => _revealed = !_revealed),
+                icon: Icon(
+                  _revealed ? Icons.visibility_off : Icons.visibility,
+                ),
+              )
+            : null,
+      ),
       style: const TextStyle(fontSize: 13),
     );
   }
@@ -1405,11 +1508,18 @@ class _Number extends StatefulWidget {
     required this.value,
     required this.onChanged,
     this.hint = '',
+    this.decimal = false,
+    this.width = 150,
   });
 
-  final int? value;
-  final ValueChanged<int?> onChanged;
+  final num? value;
+  final ValueChanged<num?> onChanged;
   final String hint;
+
+  /// Cost fields are fractions of a dollar per million tokens, so they need a
+  /// decimal point.
+  final bool decimal;
+  final double width;
 
   @override
   State<_Number> createState() => _NumberState();
@@ -1417,32 +1527,39 @@ class _Number extends StatefulWidget {
 
 class _NumberState extends State<_Number> {
   late final TextEditingController _controller =
-      TextEditingController(text: widget.value?.toString() ?? '');
+      TextEditingController(text: _format(widget.value));
   final _focus = FocusNode();
+
+  static String _format(num? value) {
+    if (value == null) return '';
+    final asInt = value.toInt();
+    return value == asInt ? '$asInt' : '$value';
+  }
+
+  num? _parse(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return null;
+    return widget.decimal ? num.tryParse(trimmed) : int.tryParse(trimmed);
+  }
 
   @override
   void initState() {
     super.initState();
-    _focus.addListener(() => _commit());
-  }
-
-  void _commit() {
-    if (_focus.hasFocus) return;
-    final text = _controller.text.trim();
-    final parsed = text.isEmpty ? null : int.tryParse(text);
-    // Reject junk rather than writing a value pi would error on.
-    if (text.isNotEmpty && parsed == null) {
-      _controller.text = widget.value?.toString() ?? '';
-      return;
-    }
-    if (parsed != widget.value) widget.onChanged(parsed);
+    _focus.addListener(() {
+      if (_focus.hasFocus) return;
+      final text = _controller.text.trim();
+      // Reject junk rather than writing a value pi would error on.
+      if (text.isNotEmpty && _parse(text) == null) {
+        _controller.text = _format(widget.value);
+      }
+    });
   }
 
   @override
   void didUpdateWidget(_Number old) {
     super.didUpdateWidget(old);
     if (!_focus.hasFocus) {
-      final next = widget.value?.toString() ?? '';
+      final next = _format(widget.value);
       if (next != _controller.text) _controller.text = next;
     }
   }
@@ -1457,21 +1574,20 @@ class _NumberState extends State<_Number> {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 150,
+      width: widget.width,
       child: TextField(
         controller: _controller,
         focusNode: _focus,
         keyboardType: TextInputType.number,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        inputFormatters: [
+          FilteringTextInputFormatter.allow(
+            widget.decimal ? RegExp(r'[0-9.]') : RegExp(r'[0-9]'),
+          ),
+        ],
         textAlign: TextAlign.right,
         // Same reason as _Entry: bind as you type, clear means "use pi's
         // default", which drops the key.
-        onChanged: (text) {
-          final trimmed = text.trim();
-          widget.onChanged(
-            trimmed.isEmpty ? null : int.tryParse(trimmed),
-          );
-        },
+        onChanged: (text) => widget.onChanged(_parse(text)),
         decoration: InputDecoration(
           hintText: widget.hint.isEmpty ? 'default' : widget.hint,
         ),
@@ -1666,6 +1782,764 @@ class _ChipState extends State<_Chip> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ------------------------------------------- providers & models (models.json)
+
+/// Adds a provider to `models.json`, keyed by id.
+class _AddProviderField extends StatefulWidget {
+  const _AddProviderField({required this.store});
+
+  final PiModels store;
+
+  @override
+  State<_AddProviderField> createState() => _AddProviderFieldState();
+}
+
+class _AddProviderFieldState extends State<_AddProviderField> {
+  final _controller = TextEditingController();
+  var _error = '';
+
+  void _add() {
+    final id = _controller.text.trim();
+    if (id.isEmpty) return;
+    if (widget.store.provider(id) != null) {
+      setState(() => _error = '"$id" is already in this file');
+      return;
+    }
+    widget.store.putProvider(id, <String, dynamic>{});
+    _controller.clear();
+    setState(() => _error = '');
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            SizedBox(
+              width: 200,
+              child: TextField(
+                controller: _controller,
+                onChanged: (_) => setState(() {}),
+                onSubmitted: (_) => _add(),
+                decoration: const InputDecoration(hintText: 'provider id'),
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+            const SizedBox(width: 6),
+            FilledButton(
+              onPressed: _controller.text.trim().isEmpty ? null : _add,
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+        if (_error.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              _error,
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: theme.colorScheme.error),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Edits one entry under `providers` in models.json.
+class _ProviderEditor extends StatefulWidget {
+  const _ProviderEditor({
+    required this.store,
+    required this.id,
+    required this.models,
+    super.key,
+  });
+
+  final PiModels store;
+  final String id;
+  final List<Object?> models;
+
+  @override
+  State<_ProviderEditor> createState() => _ProviderEditorState();
+}
+
+class _ProviderEditorState extends State<_ProviderEditor> {
+  var _discovering = false;
+  String? _discoveryMessage;
+  var _discoveryFailed = false;
+  var _idError = '';
+
+  PiModels get _store => widget.store;
+
+  Map<String, dynamic> get _provider =>
+      _store.provider(widget.id) ?? const <String, dynamic>{};
+
+  void _renameTo(String next) {
+    final id = next.trim();
+    if (id.isEmpty || id == widget.id) return;
+    if (_store.provider(id) != null) {
+      setState(() => _idError = 'A provider called "$id" already exists');
+      return;
+    }
+    setState(() => _idError = '');
+    _store.renameProvider(widget.id, id);
+  }
+
+  /// Asks the provider what models it has and adds any that are missing.
+  Future<void> _discover() async {
+    final provider = _provider;
+    final baseUrl = (provider['baseUrl'] as String?) ?? '';
+    final api = (provider['api'] as String?) ?? piModelApis.first;
+
+    String? apiKey;
+    final rawKey = provider['apiKey'];
+    if (rawKey is String && rawKey.trim().isNotEmpty) {
+      final expanded = expandConfigValue(rawKey, Platform.environment);
+      if (!expanded.ok) {
+        setState(() {
+          _discoveryFailed = true;
+          _discoveryMessage =
+              'Cannot use the stored API key: ${expanded.reason}';
+        });
+        return;
+      }
+      apiKey = expanded.value;
+    }
+
+    // Header values use the same syntax. Expand what resolves and skip the
+    // rest, rather than sending a literal "$VAR" to the server.
+    final headers = <String, String>{};
+    final rawHeaders = provider['headers'];
+    if (rawHeaders is Map) {
+      for (final entry in rawHeaders.entries) {
+        final value = entry.value;
+        if (value is! String) continue;
+        final expanded = expandConfigValue(value, Platform.environment);
+        if (expanded.ok) headers['${entry.key}'] = expanded.value!;
+      }
+    }
+
+    setState(() {
+      _discovering = true;
+      _discoveryMessage = null;
+    });
+
+    final result = await discoverModels(
+      baseUrl: baseUrl,
+      api: api,
+      apiKey: apiKey,
+      headers: headers,
+    );
+    if (!mounted) return;
+
+    if (!result.ok) {
+      setState(() {
+        _discovering = false;
+        _discoveryFailed = true;
+        _discoveryMessage = result.error;
+      });
+      return;
+    }
+
+    final added = _store.addMissingModels(widget.id, result.ids);
+    setState(() {
+      _discovering = false;
+      _discoveryFailed = false;
+      _discoveryMessage = added == 0
+          ? 'Found ${result.ids.length} models at ${result.endpoint} - all '
+              'already listed.'
+          : 'Added $added of ${result.ids.length} models from '
+              '${result.endpoint}.';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final provider = _provider;
+    final problems = _store.validate(widget.id, provider);
+    final duplicated = _store.duplicatedModelIds(widget.id);
+
+    final rawHeaders = provider['headers'];
+    final headers = <String, String>{};
+    if (rawHeaders is Map) {
+      for (final entry in rawHeaders.entries) {
+        if (entry.value is String) headers['${entry.key}'] = entry.value as String;
+      }
+    }
+
+    final apiKey = (provider['apiKey'] as String?) ?? '';
+
+    return _Card(
+      title: widget.id,
+      description: provider['name'] is String &&
+              (provider['name'] as String).trim().isNotEmpty
+          ? provider['name'] as String
+          : null,
+      children: [
+        for (final problem in problems)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: _Warning(text: problem),
+          ),
+        _Row(
+          label: 'Provider id',
+          hint: 'Key under providers in models.json. Changing it here renames '
+              'the entry.',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              _Entry(
+                value: widget.id,
+                commitOnBlur: true,
+                onChanged: _renameTo,
+              ),
+              if (_idError.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: Text(
+                    _idError,
+                    style: theme.textTheme.labelSmall
+                        ?.copyWith(color: theme.colorScheme.error),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        _Row(
+          label: 'Base URL',
+          hint: 'Where requests go, e.g. http://localhost:11434/v1',
+          child: _Entry(
+            value: (provider['baseUrl'] as String?) ?? '',
+            hint: 'https://...',
+            onChanged: (v) => _store.setProviderField(widget.id, 'baseUrl', v),
+          ),
+        ),
+        _Row(
+          label: 'API',
+          hint: 'Which streaming shape this provider speaks',
+          child: _Pick(
+            value: provider['api'] as String?,
+            unsetLabel: '(not set)',
+            options: piModelApis,
+            onChanged: (v) => _store.setProviderField(widget.id, 'api', v),
+          ),
+        ),
+        _Row(
+          label: 'API key',
+          hint: r'A literal key, $ENV_VAR, or ${ENV_VAR}. Empty means pi uses '
+              r'/login.',
+          child: _Entry(
+            value: apiKey,
+            hint: r'$MY_API_KEY',
+            // References are not secret and must stay readable; only literals
+            // are worth hiding.
+            obscure: apiKey.isNotEmpty &&
+                !apiKey.startsWith(r'$') &&
+                !apiKey.startsWith('!'),
+            onChanged: (v) => _store.setProviderField(widget.id, 'apiKey', v),
+          ),
+        ),
+        _Row(
+          label: 'Send Authorization: Bearer',
+          hint: 'For endpoints that take the key as a bearer header',
+          child: _Toggle(
+            value: provider['authHeader'] == true,
+            onChanged: (v) => _store.setProviderField(
+              widget.id,
+              'authHeader',
+              v ? true : null,
+            ),
+          ),
+        ),
+        _Row(
+          label: 'Display name',
+          hint: 'Shown where pi has room for a friendly name',
+          child: _Entry(
+            value: (provider['name'] as String?) ?? '',
+            hint: widget.id,
+            onChanged: (v) => _store.setProviderField(widget.id, 'name', v),
+          ),
+        ),
+        _KeyValueEditor(
+          label: 'Headers',
+          hint: 'Same value syntax as the API key',
+          values: headers,
+          onChanged: (next) => _store.setProviderField(
+            widget.id,
+            'headers',
+            next.isEmpty ? null : next,
+          ),
+        ),
+        const Divider(height: 24),
+        ..._modelsSection(theme, duplicated),
+        const SizedBox(height: 6),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () => _store.removeProvider(widget.id),
+            icon: const Icon(Icons.delete_outline, size: 15),
+            label: Text('Remove ${widget.id}'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _modelsSection(ThemeData theme, Set<String> duplicated) {
+    final models = widget.models;
+    return [
+      Row(
+        children: [
+          Text('Models', style: theme.textTheme.titleSmall),
+          const SizedBox(width: 8),
+          Text('${models.length}', style: theme.textTheme.labelSmall),
+          const Spacer(),
+          if (_discovering)
+            const Padding(
+              padding: EdgeInsets.only(right: 12),
+              child: SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else
+            TextButton.icon(
+              onPressed: _discover,
+              icon: const Icon(Icons.cloud_download_outlined, size: 15),
+              label: const Text('Discover'),
+            ),
+          TextButton.icon(
+            onPressed: () => _store.addModel(widget.id),
+            icon: const Icon(Icons.add, size: 15),
+            label: const Text('Add model'),
+          ),
+        ],
+      ),
+      if (_discoveryMessage != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: _Warning(text: _discoveryMessage!, error: _discoveryFailed),
+        ),
+      if (models.isEmpty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Text(
+            'No models listed. Without a models array pi keeps whatever this '
+            'provider already had, which is what you want when you are only '
+            'rerouting a built-in one.',
+            style: theme.textTheme.labelSmall,
+          ),
+        ),
+      for (var i = 0; i < models.length; i++)
+        if (models[i] is Map<String, dynamic>)
+          _ModelEditor(
+            key: ValueKey('model:$i'),
+            store: _store,
+            providerId: widget.id,
+            index: i,
+            model: models[i] as Map<String, dynamic>,
+            duplicate: duplicated.contains((models[i] as Map)['id']),
+          ),
+    ];
+  }
+}
+
+/// One model inside a provider's `models` array.
+///
+/// Identity is the array index, which is why the parent keys these by index:
+/// the id itself can be typed through empty on the way to a real value.
+class _ModelEditor extends StatelessWidget {
+  const _ModelEditor({
+    required this.store,
+    required this.providerId,
+    required this.index,
+    required this.model,
+    required this.duplicate,
+    super.key,
+  });
+
+  final PiModels store;
+  final String providerId;
+  final int index;
+  final Map<String, dynamic> model;
+  final bool duplicate;
+
+  void _set(String key, Object? value) =>
+      store.setModelField(providerId, index, key, value);
+
+  /// `cost` is a nested object, so writing one rate has to merge with the
+  /// others rather than replace the map.
+  void _setCost(String key, num? value) {
+    final next = <String, dynamic>{};
+    final current = model['cost'];
+    if (current is Map) {
+      current.forEach((k, v) => next['$k'] = v);
+    }
+    if (value == null) {
+      next.remove(key);
+    } else {
+      next[key] = value;
+    }
+    _set('cost', next.isEmpty ? null : next);
+  }
+
+  num? _cost(String key) {
+    final current = model['cost'];
+    if (current is! Map) return null;
+    final value = current[key];
+    return value is num ? value : null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final input = model['input'];
+    final supportsImages = input is List && input.contains('image');
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(10, 8, 6, 10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHigh.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: duplicate
+              ? theme.colorScheme.error.withValues(alpha: 0.6)
+              : theme.dividerColor,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                flex: 3,
+                child: _Labelled(
+                  label: 'Model id',
+                  child: _Entry(
+                    value: (model['id'] as String?) ?? '',
+                    hint: 'llama3.1:8b',
+                    onChanged: (v) => _set('id', v),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 4,
+                child: _Labelled(
+                  label: 'Display name',
+                  child: _Entry(
+                    value: (model['name'] as String?) ?? '',
+                    hint: 'optional',
+                    onChanged: (v) => _set('name', v),
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Remove model',
+                iconSize: 15,
+                onPressed: () => store.removeModelAt(providerId, index),
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _Chip(
+                label: 'reasoning',
+                selected: model['reasoning'] == true,
+                onTap: () => _set(
+                  'reasoning',
+                  model['reasoning'] == true ? null : true,
+                ),
+              ),
+              const SizedBox(width: 6),
+              _Chip(
+                label: 'vision',
+                selected: supportsImages,
+                onTap: () => _set(
+                  'input',
+                  supportsImages ? null : <String>['text', 'image'],
+                ),
+              ),
+              const Spacer(),
+              SizedBox(
+                width: 110,
+                child: _Labelled(
+                  label: 'Context',
+                  child: _Number(
+                    value: model['contextWindow'] as num?,
+                    hint: '128000',
+                    width: 110,
+                    onChanged: (v) => _set('contextWindow', v),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 100,
+                child: _Labelled(
+                  label: 'Max output',
+                  child: _Number(
+                    value: model['maxTokens'] as num?,
+                    hint: '16384',
+                    width: 100,
+                    onChanged: (v) => _set('maxTokens', v),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Text(
+                r'Cost per million tokens',
+                style: theme.textTheme.labelSmall,
+              ),
+              const Spacer(),
+              SizedBox(
+                width: 96,
+                child: _Labelled(
+                  label: 'input \$',
+                  child: _Number(
+                    value: _cost('input'),
+                    decimal: true,
+                    width: 96,
+                    hint: '0',
+                    onChanged: (v) => _setCost('input', v),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 96,
+                child: _Labelled(
+                  label: 'output \$',
+                  child: _Number(
+                    value: _cost('output'),
+                    decimal: true,
+                    width: 96,
+                    hint: '0',
+                    onChanged: (v) => _setCost('output', v),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Ordered key/value rows, for provider `headers`.
+class _KeyValueEditor extends StatefulWidget {
+  const _KeyValueEditor({
+    required this.label,
+    required this.hint,
+    required this.values,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String hint;
+  final Map<String, String> values;
+  final ValueChanged<Map<String, String>> onChanged;
+
+  @override
+  State<_KeyValueEditor> createState() => _KeyValueEditorState();
+}
+
+class _KeyValueEditorState extends State<_KeyValueEditor> {
+  final _new = TextEditingController();
+
+  void _renameKey(int index, String next) {
+    final key = next.trim();
+    final entries = widget.values.entries.toList();
+    if (index >= entries.length) return;
+    if (key.isEmpty || entries[index].key == key) return;
+    // Ignore a collision rather than silently dropping the other header.
+    if (widget.values.containsKey(key)) return;
+
+    final rebuilt = <String, String>{};
+    for (var i = 0; i < entries.length; i++) {
+      rebuilt[i == index ? key : entries[i].key] = entries[i].value;
+    }
+    widget.onChanged(rebuilt);
+  }
+
+  void _add() {
+    final key = _new.text.trim();
+    if (key.isEmpty || widget.values.containsKey(key)) return;
+    widget.onChanged({...widget.values, key: ''});
+    _new.clear();
+    setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _new.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = widget.values.entries.toList();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(widget.label, style: Theme.of(context).textTheme.bodyMedium),
+          const SizedBox(height: 4),
+          for (var i = 0; i < entries.length; i++)
+            Padding(
+              key: ValueKey('header:$i'),
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: _Entry(
+                      value: entries[i].key,
+                      hint: 'header',
+                      commitOnBlur: true,
+                      onChanged: (v) => _renameKey(i, v),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    flex: 3,
+                    child: _Entry(
+                      value: entries[i].value,
+                      hint: widget.hint,
+                      onChanged: (v) => widget.onChanged({
+                        ...widget.values,
+                        entries[i].key: v,
+                      }),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Remove header',
+                    iconSize: 15,
+                    onPressed: () {
+                      final next = {...widget.values}..remove(entries[i].key);
+                      widget.onChanged(next);
+                    },
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _new,
+                  onChanged: (_) => setState(() {}),
+                  onSubmitted: (_) => _add(),
+                  decoration: const InputDecoration(hintText: 'Add header'),
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+              const SizedBox(width: 6),
+              IconButton(
+                tooltip: 'Add',
+                onPressed: _new.text.trim().isEmpty ? null : _add,
+                icon: const Icon(Icons.add, size: 18),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A label stacked above its control, for the compact model rows.
+class _Labelled extends StatelessWidget {
+  const _Labelled({required this.label, required this.child});
+
+  final String label;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 2),
+          child: Text(
+            label,
+            style: theme.textTheme.labelSmall?.copyWith(color: theme.hintColor),
+          ),
+        ),
+        child,
+      ],
+    );
+  }
+}
+
+/// Inline note for validation problems and discovery results.
+class _Warning extends StatelessWidget {
+  const _Warning({required this.text, this.error = false});
+
+  final String text;
+  final bool error;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colour =
+        error ? theme.colorScheme.error : theme.colorScheme.secondary;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: colour.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(color: colour.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            error ? Icons.error_outline : Icons.info_outline,
+            size: 14,
+            color: colour,
+          ),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: theme.colorScheme.onSurface),
+            ),
+          ),
+        ],
       ),
     );
   }
