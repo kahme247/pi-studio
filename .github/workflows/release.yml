@@ -62,12 +62,18 @@ jobs:
           & $iscc "/DMyAppVersion=$version" installer.iss
           if ($LASTEXITCODE -ne 0) { throw 'ISCC failed' }
 
+          # Zip whatever the build actually produced rather than a fixed file
+          # list. native_assets.json is present in some builds and not others,
+          # and naming a missing entry fails the whole step.
+          $release = 'build\windows\x64\runner\Release'
+          $items = Get-ChildItem $release -Force |
+            Select-Object -ExpandProperty Name
+          Write-Host "Zipping: $($items -join ', ')"
+
           # tar, not Compress-Archive: the latter writes backslash path
           # separators, which are not valid ZIP paths and break extraction on
           # anything but Windows Explorer.
-          tar.exe -a -c -f "dist\PiStudio-$version-Portable-x64.zip" `
-            -C 'build\windows\x64\runner\Release' `
-            pi_studio.exe flutter_windows.dll native_assets.json data
+          tar.exe -a -c -f "dist\PiStudio-$version-Portable-x64.zip" -C $release @items
           if ($LASTEXITCODE -ne 0) { throw 'tar failed' }
 
           Get-ChildItem dist | ForEach-Object { Write-Host "  $($_.Name)  $($_.Length) bytes" }
