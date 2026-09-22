@@ -221,10 +221,11 @@ class _FadeInState extends State<FadeIn> with SingleTickerProviderStateMixin {
 
 /// Draggable pane splitter: 8px hit area, hover highlight, double-click reset.
 class SplitHandle extends StatefulWidget {
-  const SplitHandle({super.key, required this.onDrag, required this.onReset});
+  const SplitHandle({super.key, required this.onDrag, required this.onReset, this.color});
 
   final ValueChanged<double> onDrag;
   final VoidCallback onReset;
+  final Color? color;
 
   @override
   State<SplitHandle> createState() => _SplitHandleState();
@@ -249,7 +250,7 @@ class _SplitHandleState extends State<SplitHandle> {
           width: 8,
           color: _hovered
               ? theme.colorScheme.primary.withValues(alpha: 0.35)
-              : Colors.transparent,
+              : (widget.color ?? Colors.transparent),
         ),
       ),
     );

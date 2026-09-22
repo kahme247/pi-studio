@@ -25,6 +25,12 @@ class ChatItem {
   String? result;
   bool isError = false;
   bool isDone = false;
+
+  /// Stable across history re-renders (which rebuild every object): lets the
+  /// transcript keep element identity when older pages prepend, instead of
+  /// rematching every visible row by index and relaying out the whole list.
+  /// Null for live-streamed items, which keep object identity instead.
+  String? stableId;
 }
 
 /// Owns one `pi --mode rpc` process and its transcript. Sessions are
@@ -51,10 +57,8 @@ class SessionController extends ChangeNotifier {
   final String? sourcePath;
 
   /// Windows-style, case-insensitive path comparison.
-  static String normalizePath(String path) => path
-      .replaceAll('/', r'\')
-      .replaceAll(RegExp(r'\\+$'), '')
-      .toLowerCase();
+  static String normalizePath(String path) =>
+      path.replaceAll('/', r'\').replaceAll(RegExp(r'\\+$'), '').toLowerCase();
 
   bool matchesSession(String path) {
     final normalized = normalizePath(path);
@@ -118,6 +122,7 @@ class SessionController extends ChangeNotifier {
     await connect();
     _notify();
   }
+
   List<Map<String, dynamic>> models = [];
   List<String> thinkingLevels = [];
   Map<String, dynamic>? stats;
@@ -283,8 +288,9 @@ class SessionController extends ChangeNotifier {
       final levelsResponse = await client.getAvailableThinkingLevels();
       final levelsData = levelsResponse['data'];
       if (levelsData is Map && levelsData['levels'] is List) {
-        thinkingLevels =
-            (levelsData['levels'] as List).whereType<String>().toList();
+        thinkingLevels = (levelsData['levels'] as List)
+            .whereType<String>()
+            .toList();
       }
     } catch (_) {
       // Composer menus stay empty; everything else keeps working.
@@ -401,37 +407,49 @@ class SessionController extends ChangeNotifier {
   bool get hasHiddenHistory => _history.length > _historyWindow;
   int get hiddenHistoryCount => _history.length - _historyWindow;
 
-  /// Reveals about a quarter of the hidden history — called when the user
-  /// scrolls to the top of the transcript.
+  /// Reveals hidden history in bounded pages — called when the user scrolls
+  /// to the top of the transcript. Unbounded chunks (a quarter of thousands
+  /// of rows) never finish laying out before the scroll compensation runs,
+  /// so the view drops; 100 rows settle within a frame or two.
   void loadOlderHistory() {
     if (!hasHiddenHistory) return;
-    final step =
-        (hiddenHistoryCount / 4).ceil().clamp(1, hiddenHistoryCount);
+    var step = (hiddenHistoryCount / 4).ceil().clamp(1, hiddenHistoryCount);
+    if (step > 100) step = 100;
     _historyWindow += step;
     _renderHistory();
     _notify();
   }
 
   void _renderHistory() {
-    final start =
-        _history.length > _historyWindow ? _history.length - _historyWindow : 0;
+    final start = _history.length > _historyWindow
+        ? _history.length - _historyWindow
+        : 0;
     items.clear();
     toolItems.clear();
     if (start > 0) {
-      items.add(ChatItem(ItemKind.notice)
-        ..text = '$start earlier messages hidden — scroll up to load');
+      items.add(
+        ChatItem(ItemKind.notice)
+          ..text = '$start earlier messages hidden — scroll up to load'
+          ..stableId = 'notice',
+      );
     }
-    for (final message in _history.sublist(start)) {
-      _addStoredMessage(message);
+    final window = _history.sublist(start);
+    for (var i = 0; i < window.length; i++) {
+      _addStoredMessage(window[i], stableId: '${start + i}');
     }
   }
 
-  void _addStoredMessage(Map<String, dynamic> message) {
+  void _addStoredMessage(Map<String, dynamic> message, {String? stableId}) {
     final role = message['role'];
     final time = _msToDate(message['timestamp']);
+    var block = 0;
+    String? nextId() => stableId == null ? null : '$stableId:${block++}';
     if (role == 'user') {
-      items.add(ChatItem(ItemKind.user, text: _contentToText(message['content']))
-        ..time = time);
+      items.add(
+        ChatItem(ItemKind.user, text: _contentToText(message['content']))
+          ..time = time
+          ..stableId = nextId(),
+      );
     } else if (role == 'assistant') {
       final blocks = message['content'];
       if (blocks is! List) return;
@@ -442,17 +460,23 @@ class SessionController extends ChangeNotifier {
             final text = '${block['text'] ?? ''}';
             if (text.trim().isNotEmpty) {
               items.add(
-                ChatItem(ItemKind.assistant, text: text)..time = time,
+                ChatItem(ItemKind.assistant, text: text)
+                  ..time = time
+                  ..stableId = nextId(),
               );
             }
           case 'thinking':
-            items.add(ChatItem(ItemKind.thinking, text: '${block['thinking'] ?? ''}')
-              ..time = time);
+            items.add(
+              ChatItem(ItemKind.thinking, text: '${block['thinking'] ?? ''}')
+                ..time = time
+                ..stableId = nextId(),
+            );
           case 'toolCall':
             final item = ChatItem(ItemKind.tool)
               ..toolName = '${block['name'] ?? 'tool'}'
               ..toolCallId = '${block['id'] ?? ''}'
               ..args = _prettyJson(block['arguments'])
+              ..stableId = nextId()
               ..isDone = true;
             if (item.toolCallId.isNotEmpty) toolItems[item.toolCallId] = item;
             items.add(item);
@@ -507,13 +531,17 @@ class SessionController extends ChangeNotifier {
         streaming = false;
         status = 'pi exited (code ${event['code']})';
         if (stderrTail.isNotEmpty) {
-          items.add(ChatItem(ItemKind.notice)
-            ..text = 'pi said: ${stderrTail.join(' | ')}');
+          items.add(
+            ChatItem(ItemKind.notice)
+              ..text = 'pi said: ${stderrTail.join(' | ')}',
+          );
         }
       case 'compaction_end':
         final aborted = event['aborted'] == true;
-        items.add(ChatItem(ItemKind.event)
-          ..text = aborted ? 'Compaction aborted' : 'Context compacted');
+        items.add(
+          ChatItem(ItemKind.event)
+            ..text = aborted ? 'Compaction aborted' : 'Context compacted',
+        );
     }
     if (event['type'] == 'message_update' ||
         event['type'] == 'tool_execution_update') {
@@ -568,8 +596,9 @@ class SessionController extends ChangeNotifier {
       case 'thinking_end':
         final started = _thinkingStartedAt;
         if (started != null && streamingThinking != null) {
-          streamingThinking!.thinkingSeconds =
-              DateTime.now().difference(started).inSeconds;
+          streamingThinking!.thinkingSeconds = DateTime.now()
+              .difference(started)
+              .inSeconds;
         }
         _thinkingStartedAt = null;
       case 'toolcall_start':
@@ -662,8 +691,11 @@ class SessionController extends ChangeNotifier {
     if (const {'select', 'confirm', 'input', 'editor'}.contains(method)) {
       // No dialog UI yet; decline so the agent never blocks on us.
       _client?.declineExtensionUi('${event['id']}');
-      items.add(ChatItem(ItemKind.notice)
-        ..text = 'Extension dialog auto-declined: ${event['title'] ?? method}');
+      items.add(
+        ChatItem(
+          ItemKind.notice,
+        )..text = 'Extension dialog auto-declined: ${event['title'] ?? method}',
+      );
     }
   }
 
@@ -694,7 +726,8 @@ class SessionController extends ChangeNotifier {
     tokensPerSecond = _outputTokens * 1000 / millis;
   }
 
-  void _notice(String text) => items.add(ChatItem(ItemKind.notice)..text = text);
+  void _notice(String text) =>
+      items.add(ChatItem(ItemKind.notice)..text = text);
 
   void _notify() {
     if (!_disposed) notifyListeners();

@@ -8,8 +8,9 @@ void main() {
   ) async {
     await tester.pumpWidget(const PiStudioApp());
 
-    expect(find.text('Pi Studio'), findsOneWidget);
-    expect(find.text('No session selected.'), findsOneWidget);
+    expect(find.text('Pi Studio'), findsWidgets);
+    expect(find.text('What do you want to build?'), findsOneWidget);
+    expect(find.text('New task'), findsWidgets);
     expect(find.text('Add project'), findsWidgets);
   });
 }

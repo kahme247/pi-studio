@@ -238,12 +238,33 @@ class _AccessPillState extends State<AccessPill> {
                   color: full ? theme.colorScheme.secondary : theme.hintColor,
                 ),
                 const SizedBox(width: 5),
-                Text(
-                  full ? 'Full access' : 'Ask first',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: full ? theme.colorScheme.onSurface : theme.hintColor,
-                    fontWeight: FontWeight.w500,
-                  ),
+                // Both labels stacked: the pill is always as wide as the
+                // wider one, so toggling never moves the row's right side.
+                Stack(
+                  children: [
+                    Opacity(
+                      opacity: full ? 1 : 0,
+                      child: Text(
+                        'Full access',
+                        maxLines: 1,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurface,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    Opacity(
+                      opacity: full ? 0 : 1,
+                      child: Text(
+                        'Ask first',
+                        maxLines: 1,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.hintColor,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -663,7 +684,7 @@ class _MenuLabel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 150),
+            constraints: const BoxConstraints(maxWidth: 220),
             child: Text(
               label,
               maxLines: 1,

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
+import 'package:window_manager/window_manager.dart';
+
 import 'git/git_ops.dart';
 import 'pi/session_store.dart';
 import 'platform/folder_picker.dart';
@@ -20,7 +22,23 @@ import 'ui/review_pane.dart';
 import 'ui/session_chrome.dart';
 import 'ui/transcript_view.dart';
 
-void main() => runApp(const PiStudioApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Transparent backdrop on Windows only: the Linux runner keeps its opaque
+  // GTK frame. The existing Win32 title bar / resize machinery is untouched —
+  // window_manager only supplies the transparent frame and clean first show.
+  if (Platform.isWindows) {
+    await windowManager.ensureInitialized();
+    await windowManager.waitUntilReadyToShow(
+      const WindowOptions(backgroundColor: Colors.transparent),
+      () async {
+        await windowManager.show();
+        await windowManager.focus();
+      },
+    );
+  }
+  runApp(const PiStudioApp());
+}
 
 class PiStudioApp extends StatelessWidget {
   const PiStudioApp({super.key});
@@ -30,7 +48,7 @@ class PiStudioApp extends StatelessWidget {
     return MaterialApp(
       title: 'Pi Studio',
       debugShowCheckedModeBanner: false,
-      theme: appTheme(),
+      theme: appTheme(translucent: Platform.isWindows),
       home: const HomePage(),
     );
   }
@@ -65,11 +83,9 @@ class _HomePageState extends State<HomePage> {
   final _piSettings = PiSettings();
   final _piModels = PiModels();
   var _loadingOlder = false;
-  var _sidebarWidth = 320.0;
+  var _sidebarWidth = 264.0;
   var _railWidth = 520.0;
-  final Map<int, GlobalKey> _turnKeys = {};
-  int _activeTurn = 0;
-  var _isProgrammaticScroll = false;
+  var _composerFocused = false;
   final _searchController = TextEditingController();
   final _branchSearchController = TextEditingController();
   List<PiSession> _savedSessions = [];
@@ -596,21 +612,18 @@ class _HomePageState extends State<HomePage> {
     _toast('Deleted');
   }
 
-  /// Reveals older history when the transcript is scrolled to the top,
-  /// keeping the visible position stable.
-  Future<void> _maybeLoadOlder(SessionController session) async {
+  /// Reveals older history when the transcript is scrolled near the top.
+  /// The list is reversed (newest at offset zero), so prepends grow the far
+  /// end and the viewport never moves — loading is just the call, with no
+  /// scroll compensation to mistime.
+  void _maybeLoadOlder(SessionController session) {
     if (_loadingOlder || !session.hasHiddenHistory) return;
     _loadingOlder = true;
-    final hadClients = _scroll.hasClients;
-    final before = hadClients ? _scroll.position.maxScrollExtent : 0.0;
-    final offset = hadClients ? _scroll.position.pixels : 0.0;
-    session.loadOlderHistory();
-    await Future<void>.delayed(const Duration(milliseconds: 60));
-    if (mounted && _scroll.hasClients) {
-      final after = _scroll.position.maxScrollExtent;
-      _scroll.jumpTo((offset + (after - before)).clamp(0.0, after));
+    try {
+      session.loadOlderHistory();
+    } finally {
+      _loadingOlder = false;
     }
-    _loadingOlder = false;
   }
 
   /// Right-hand panel: Review (git diff), Files (tree) and Terminal.
@@ -733,8 +746,9 @@ class _HomePageState extends State<HomePage> {
   Widget _splitter({
     required ValueChanged<double> onDrag,
     required VoidCallback onReset,
+    Color? color,
   }) {
-    return SplitHandle(onDrag: onDrag, onReset: onReset);
+    return SplitHandle(onDrag: onDrag, onReset: onReset, color: color);
   }
 
   /// Invisible 6px bands that start native window resizing. The Flutter view
@@ -1129,18 +1143,28 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// Null unless exactly one scroll view holds [_scroll]. During
+  /// session-switch transitions the outgoing and incoming transcripts briefly
+  /// share it, and [ScrollController.position] asserts in that window — every
+  /// touch point goes through here so a switch can never crash scrolling.
+  ScrollPosition? _transcriptPosition() {
+    if (_scroll.positions.length != 1) return null;
+    return _scroll.positions.first;
+  }
+
   void _scrollToEnd({bool force = false}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scroll.hasClients) return;
-      final position = _scroll.position;
-      final distance = position.maxScrollExtent - position.pixels;
+      final position = _transcriptPosition();
+      if (position == null) return;
+      // Reversed list: offset zero is the newest (bottom) end.
+      final distance = position.pixels - position.minScrollExtent;
       if (!force && distance >= 120) return;
       if (force || MediaQuery.of(context).disableAnimations) {
-        _scroll.jumpTo(position.maxScrollExtent);
+        position.jumpTo(position.minScrollExtent);
         return;
       }
-      _scroll.animateTo(
-        position.maxScrollExtent,
+      position.animateTo(
+        position.minScrollExtent,
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
       );
@@ -1189,32 +1213,40 @@ class _HomePageState extends State<HomePage> {
                   children: [
                     SizedBox(width: _sidebarWidth, child: _sidebar(context)),
                     _splitter(
+                      color: _sidebarBackground(context),
                       onDrag: (dx) => setState(
                         () => _sidebarWidth = (_sidebarWidth + dx).clamp(
                           240.0,
                           480.0,
                         ),
                       ),
-                      onReset: () => setState(() => _sidebarWidth = 320),
+                      onReset: () => setState(() => _sidebarWidth = 264),
                     ),
                     Expanded(
-                      child: AnimatedSwitcher(
-                        duration: motion(context, 200),
-                        switchInCurve: Curves.easeOutCubic,
-                        switchOutCurve: Curves.easeIn,
-                        transitionBuilder: (child, animation) => FadeTransition(
-                          opacity: animation,
-                          child: SlideTransition(
-                            position: Tween<Offset>(
-                              begin: const Offset(0, 0.012),
-                              end: Offset.zero,
-                            ).animate(animation),
-                            child: child,
+                      // Opaque shell: the scaffold is transparent on Windows
+                      // and only the sidebar may let the wallpaper through —
+                      // this covers both the hero and the transcript.
+                      child: Container(
+                        color: theme.colorScheme.surface,
+                        child: AnimatedSwitcher(
+                          duration: motion(context, 200),
+                          switchInCurve: Curves.easeOutCubic,
+                          switchOutCurve: Curves.easeIn,
+                          transitionBuilder: (child, animation) =>
+                              FadeTransition(
+                                opacity: animation,
+                                child: SlideTransition(
+                                  position: Tween<Offset>(
+                                    begin: const Offset(0, 0.012),
+                                    end: Offset.zero,
+                                  ).animate(animation),
+                                  child: child,
+                                ),
+                              ),
+                          child: KeyedSubtree(
+                            key: ValueKey(_selected),
+                            child: _chatPane(context),
                           ),
-                        ),
-                        child: KeyedSubtree(
-                          key: ValueKey(_selected),
-                          child: _chatPane(context),
                         ),
                       ),
                     ),
@@ -1223,23 +1255,30 @@ class _HomePageState extends State<HomePage> {
                       curve: Curves.easeOutCubic,
                       alignment: Alignment.centerRight,
                       child: _showRail && session != null
-                          ? Row(
-                              children: [
-                                _splitter(
-                                  onDrag: (dx) => setState(
-                                    () => _railWidth = (_railWidth - dx).clamp(
-                                      320.0,
-                                      820.0,
+                          // Opaque shell around the animated row: without it
+                          // the wallpaper flashes through the rail's area for
+                          // a frame while AnimatedSize grows/shrinks.
+                          ? Container(
+                              color: theme.colorScheme.surfaceContainerLowest,
+                              child: Row(
+                                children: [
+                                  _splitter(
+                                    color: theme
+                                        .colorScheme
+                                        .surfaceContainerLowest,
+                                    onDrag: (dx) => setState(
+                                      () => _railWidth = (_railWidth - dx)
+                                          .clamp(320.0, 820.0),
                                     ),
+                                    onReset: () =>
+                                        setState(() => _railWidth = 520),
                                   ),
-                                  onReset: () =>
-                                      setState(() => _railWidth = 520),
-                                ),
-                                SizedBox(
-                                  width: _railWidth,
-                                  child: _rail(context, session),
-                                ),
-                              ],
+                                  SizedBox(
+                                    width: _railWidth,
+                                    child: _rail(context, session),
+                                  ),
+                                ],
+                              ),
                             )
                           : const SizedBox.shrink(),
                     ),
@@ -1295,53 +1334,68 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// The one translucent pane: wallpaper shows through here while the chat
+  /// side stays fully opaque. Linux keeps the solid fill. Kept at high
+  /// alpha — without a native blur pass (no maintained plugin offers one)
+  /// this reads as frosted rather than glass.
+  Color _sidebarBackground(BuildContext context) {
+    final base = Theme.of(context).colorScheme.surfaceContainerLowest;
+    return Platform.isWindows ? base.withValues(alpha: 0.92) : base;
+  }
+
   Widget _sidebar(BuildContext context) {
     final theme = Theme.of(context);
+    final background = _sidebarBackground(context);
     return Container(
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLowest,
+        color: background,
         border: Border(right: BorderSide(color: theme.dividerColor)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 8),
-          _sidebarAction(
-            context,
-            icon: Icons.add_box_outlined,
-            label: 'New Task',
-            onTap: _newTask,
-          ),
-          Row(
-            children: [
-              Expanded(
-                child: _sidebarAction(
-                  context,
-                  icon: Icons.search,
-                  label: 'Search',
-                  onTap: () => setState(() {
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 6, 0),
+            child: Row(
+              children: [
+                Image.asset('assets/icon/app_icon.png', width: 16, height: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('Pi Studio', style: theme.textTheme.titleSmall),
+                ),
+                IconButton(
+                  onPressed: () => setState(() {
                     _searching = !_searching;
                     if (!_searching) {
                       _searchQuery = '';
                       _searchController.clear();
                     }
                   }),
+                  icon: const Icon(Icons.search, size: 16),
+                  tooltip: 'Search sessions',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 28,
+                    minHeight: 28,
+                  ),
                 ),
-              ),
-              IconButton(
-                onPressed: _loadSavedSessions,
-                icon: const Icon(Icons.refresh, size: 15),
-                tooltip: 'Reload sessions',
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-              ),
-              const SizedBox(width: 10),
-            ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: _sidebarAction(
+              context,
+              icon: Icons.add_circle_outline,
+              label: 'New task',
+              onTap: _newTask,
+            ),
           ),
           if (_searching)
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
               child: TextField(
                 controller: _searchController,
                 autofocus: true,
@@ -1349,9 +1403,10 @@ class _HomePageState extends State<HomePage> {
                 onChanged: (value) => setState(() => _searchQuery = value),
               ),
             ),
+          _sectionHeader(context, 'Recent', onRefresh: _loadSavedSessions),
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
               children: _sessionList(context),
             ),
           ),
@@ -1401,6 +1456,53 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// Small-caps section label with an optional trailing action, matching the
+  /// time-group headers used further down the list.
+  Widget _sectionHeader(
+    BuildContext context,
+    String label, {
+    VoidCallback? onAdd,
+    VoidCallback? onRefresh,
+  }) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 14, 6, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label.toUpperCase(),
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.hintColor.withValues(alpha: 0.8),
+                fontWeight: FontWeight.w600,
+                fontSize: 10.5,
+                letterSpacing: 0.9,
+              ),
+            ),
+          ),
+          if (onAdd != null)
+            IconButton(
+              onPressed: onAdd,
+              icon: const Icon(Icons.add, size: 15),
+              tooltip: 'Add project',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            ),
+          if (onRefresh != null)
+            IconButton(
+              onPressed: onRefresh,
+              icon: const Icon(Icons.refresh, size: 14),
+              tooltip: 'Reload sessions',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _sidebarAction(
     BuildContext context, {
     required IconData icon,
@@ -1440,36 +1542,53 @@ class _HomePageState extends State<HomePage> {
     final session = _selected;
     if (session == null) {
       return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.terminal, size: 40, color: theme.hintColor),
-            const SizedBox(height: 12),
-            Text(
-              'No session selected.',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.hintColor,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Image.asset('assets/icon/app_icon.png', width: 52, height: 52),
+              const SizedBox(height: 20),
+              Text(
+                'What do you want to build?',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: _addProject,
-              icon: const Icon(Icons.create_new_folder_outlined, size: 16),
-              label: const Text('Add project'),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Text(
+                'Pick a project from the sidebar, or start fresh.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.hintColor,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _newTask,
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('New task'),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () => _addProject(),
+                    child: const Text('Add project'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       );
     }
     final rows = _displayRows(session.items);
-    final userTurns = <({int turnIndex, int rowIndex, ChatItem item})>[];
-    var turnCounter = 0;
-    for (var i = 0; i < rows.length; i++) {
-      final r = rows[i];
-      if (r is ChatItem && r.kind == ItemKind.user) {
-        userTurns.add((turnIndex: turnCounter++, rowIndex: i, item: r));
-      }
-    }
+    // Newest first to match the reversed list below.
+    final latestFirst = rows.reversed.toList();
     final chat = Column(
       children: [
         Padding(
@@ -1568,16 +1687,10 @@ class _HomePageState extends State<HomePage> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(
-                            '✳',
-                            style: TextStyle(
-                              fontSize: 26,
-                              // The brand accent, not the old warm orange:
-                              // on a neutral palette a lone amber mark was
-                              // the only hue that belonged to no system.
-                              color: theme.colorScheme.primary,
-                              height: 1,
-                            ),
+                          Image.asset(
+                            'assets/icon/app_icon.png',
+                            width: 26,
+                            height: 26,
                           ),
                           const SizedBox(height: 16),
                           Text.rich(
@@ -1608,104 +1721,23 @@ class _HomePageState extends State<HomePage> {
                   : Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (userTurns.length >= 2)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 22, right: 6),
-                            child: TurnScrubber(
-                              turns: userTurns,
-                              activeTurn: _activeTurn,
-                              onSelectTurn: (turnIndex) async {
-                                setState(() => _activeTurn = turnIndex);
-                                _isProgrammaticScroll = true;
-                                final key = _turnKeys[turnIndex];
-                                if (key?.currentContext != null) {
-                                  await Scrollable.ensureVisible(
-                                    key!.currentContext!,
-                                    duration: const Duration(milliseconds: 300),
-                                    curve: Curves.easeOutCubic,
-                                    alignment: 0.05,
-                                  );
-                                } else if (_scroll.hasClients &&
-                                    _scroll.position.maxScrollExtent > 0) {
-                                  final turn = userTurns.firstWhere(
-                                    (t) => t.turnIndex == turnIndex,
-                                  );
-                                  final ratio = rows.length > 1
-                                      ? turn.rowIndex / (rows.length - 1)
-                                      : 0.0;
-                                  final target =
-                                      (ratio * _scroll.position.maxScrollExtent)
-                                          .clamp(
-                                            0.0,
-                                            _scroll.position.maxScrollExtent,
-                                          );
-                                  await _scroll.animateTo(
-                                    target,
-                                    duration: const Duration(milliseconds: 300),
-                                    curve: Curves.easeOutCubic,
-                                  );
-                                  // Row heights vary wildly (code blocks,
-                                  // diffs), so a ratio estimate lands short
-                                  // or long. The target is inside the cache
-                                  // window now, so correct against its real
-                                  // offset instead of leaving it approximate.
-                                  await WidgetsBinding.instance.endOfFrame;
-                                  final landed = key?.currentContext;
-                                  if (landed != null && landed.mounted) {
-                                    await Scrollable.ensureVisible(
-                                      landed,
-                                      duration: const Duration(
-                                        milliseconds: 160,
-                                      ),
-                                      curve: Curves.easeOutCubic,
-                                      alignment: 0.05,
-                                    );
-                                  }
-                                }
-                                await Future.delayed(
-                                  const Duration(milliseconds: 100),
-                                );
-                                _isProgrammaticScroll = false;
-                              },
-                            ),
-                          ),
                         Expanded(
                           child: NotificationListener<ScrollNotification>(
                             onNotification: (notification) {
-                              if (notification.metrics.pixels <= 160) {
+                              // Reversed list: the visual top is the max edge.
+                              if (notification.metrics.maxScrollExtent -
+                                      notification.metrics.pixels <=
+                                  400) {
                                 _maybeLoadOlder(session);
-                              }
-                              if (!_isProgrammaticScroll &&
-                                  userTurns.length >= 2 &&
-                                  notification.metrics.maxScrollExtent > 0) {
-                                int? closest;
-                                double minDistance = double.infinity;
-                                for (final t in userTurns) {
-                                  final key = _turnKeys[t.turnIndex];
-                                  final ctx = key?.currentContext;
-                                  if (ctx != null) {
-                                    final box =
-                                        ctx.findRenderObject() as RenderBox?;
-                                    if (box != null && box.hasSize) {
-                                      final dy = box
-                                          .localToGlobal(Offset.zero)
-                                          .dy;
-                                      final dist = (dy - 120).abs();
-                                      if (dist < minDistance) {
-                                        minDistance = dist;
-                                        closest = t.turnIndex;
-                                      }
-                                    }
-                                  }
-                                }
-                                if (closest != null && closest != _activeTurn) {
-                                  setState(() => _activeTurn = closest!);
-                                }
                               }
                               return false;
                             },
                             child: ListView.builder(
                               controller: _scroll,
+                              // Newest first: offset zero is the bottom end,
+                              // so history prepends grow the far edge and the
+                              // viewport holds still with no compensation.
+                              reverse: true,
                               // Was 50000px, which kept almost every row of
                               // a long session built and laid out on every
                               // scroll frame. Each markdown block is a
@@ -1724,39 +1756,31 @@ class _HomePageState extends State<HomePage> {
                                 16,
                                 24,
                               ),
-                              itemCount: rows.length,
+                              itemCount: latestFirst.length,
                               itemBuilder: (context, index) {
-                                final row = rows[index];
+                                final row = latestFirst[index];
                                 if (row is List<ChatItem>) {
                                   return ActivityBlockView(
                                     items: row,
-                                    live:
-                                        session.streaming &&
-                                        index == rows.length - 1,
+                                    key: ValueKey(
+                                      'blk:${row.first.stableId ?? 'live-$index'}',
+                                    ),
+                                    live: session.streaming && index == 0,
                                     seconds: session.processingSeconds,
                                     tokensPerSecond: session.tokensPerSecond,
                                   );
                                 }
                                 final item = row as ChatItem;
-                                Key? key;
-                                if (item.kind == ItemKind.user) {
-                                  final turnIdx = userTurns.indexWhere(
-                                    (t) => identical(t.item, item),
-                                  );
-                                  if (turnIdx != -1) {
-                                    key = _turnKeys.putIfAbsent(
-                                      turnIdx,
-                                      () => GlobalKey(),
-                                    );
-                                  }
-                                }
+                                final stableId = item.stableId;
                                 return ChatItemView(
                                   item,
-                                  key: key,
+                                  key: stableId == null
+                                      ? null
+                                      : ValueKey(stableId),
                                   live:
                                       session.streaming &&
                                       item.kind == ItemKind.assistant &&
-                                      index == rows.length - 1,
+                                      index == 0,
                                 );
                               },
                             ),
@@ -1775,12 +1799,16 @@ class _HomePageState extends State<HomePage> {
               children: [
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
-                  child: Container(
+                  child: AnimatedContainer(
+                    duration: motion(context, 150),
+                    curve: Curves.easeOut,
                     decoration: BoxDecoration(
                       color: theme.colorScheme.surfaceContainerHigh,
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                        color: theme.dividerColor.withValues(alpha: 0.5),
+                        color: _composerFocused
+                            ? theme.colorScheme.primary.withValues(alpha: 0.55)
+                            : theme.dividerColor.withValues(alpha: 0.5),
                       ),
                     ),
                     padding: const EdgeInsets.fromLTRB(12, 4, 8, 8),
@@ -1788,6 +1816,8 @@ class _HomePageState extends State<HomePage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Focus(
+                          onFocusChange: (hasFocus) =>
+                              setState(() => _composerFocused = hasFocus),
                           onKeyEvent: (node, event) {
                             // Enter sends; Shift+Enter keeps the newline.
                             if (event is KeyDownEvent &&
@@ -1823,6 +1853,8 @@ class _HomePageState extends State<HomePage> {
                               visualDensity: VisualDensity.compact,
                             ),
                             const SizedBox(width: 4),
+                            // Flexible: absorbs sub-pixel rounding so the row
+                            // never stripes at narrow widths.
                             AccessPill(session: session),
                             const Spacer(),
                             if (session.streaming) ...[
@@ -1866,6 +1898,8 @@ class _HomePageState extends State<HomePage> {
         ),
       ],
     );
+    // Opaque: the scaffold behind is transparent on Windows, and only the
+    // sidebar is meant to let the wallpaper through.
     return chat;
   }
 }

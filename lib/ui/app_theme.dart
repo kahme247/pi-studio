@@ -23,7 +23,13 @@ const diffAdded = Color(0xFF5EA86D);
 ///
 /// The brand accent stays magenta: the reference's chrome is entirely neutral,
 /// so borrowing its greys does not mean borrowing an accent it does not have.
-ThemeData appTheme() {
+///
+/// When [translucent] is true (Windows, where the window backdrop itself is
+/// transparent) the scaffold paints nothing so the wallpaper can show
+/// through wherever a pane opts into translucency — currently only the
+/// sidebar. Every surface token stays fully opaque; panes choose their own
+/// alpha explicitly, so text contrast never depends on the wallpaper.
+ThemeData appTheme({bool translucent = false}) {
   const ink0 = Color(0xFF121216); // main pane, transcript
   const ink1 = Color(0xFF18191B); // sidebar, rail, cards, menus
   const ink2 = Color(0xFF202226); // composer, inputs, raised inside a card
@@ -73,7 +79,7 @@ ThemeData appTheme() {
 
   return base.copyWith(
     hintColor: ink5,
-    scaffoldBackgroundColor: ink0,
+    scaffoldBackgroundColor: translucent ? Colors.transparent : ink0,
     visualDensity: VisualDensity.compact,
     // InkSparkle builds a per-tap GPU shader. That is a touch idiom: it costs
     // frames here and reads as noise under a mouse. A cheap ripple plus the
