@@ -36,6 +36,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Copy-Tree([string]$src, [string]$rel) {
+  # Copy-Item does not create missing destination parents.
+  $dst = Join-Path $dest $rel
+  New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+  Copy-Item $src $dst -Recurse -Force
+}
+
 function Find-PiDir {
   if ($env:PI_STUDIO_PI_DIR -and (Test-Path (Join-Path $env:PI_STUDIO_PI_DIR 'package.json'))) {
     return $env:PI_STUDIO_PI_DIR
@@ -96,18 +103,17 @@ $bundle = Join-Path $piDir 'dist/bundle'
 foreach ($name in @('rpc-entry.js', 'cli.js', 'cli-runtime.js', 'index.js', 'chunks')) {
   $src = Join-Path $bundle $name
   if (-not (Test-Path $src)) { throw "missing $src; is pi $version intact?" }
-  Copy-Item $src (Join-Path $dest "dist/bundle/$name") -Recurse -Force
+  Copy-Tree $src "dist/bundle/$name"
 }
 foreach ($asset in @('dist/modes/interactive/theme', 'dist/core/export-html', 'dist/modes/interactive/assets')) {
   $src = Join-Path $piDir $asset
   if (-not (Test-Path $src)) { throw "missing $src; is pi $version intact?" }
-  Copy-Item $src (Join-Path $dest $asset) -Recurse -Force
+  Copy-Tree $src $asset
 }
 
 $photon = Join-Path $piDir 'node_modules/@silvia-odwyer/photon-node'
 if (Test-Path $photon) {
-  Copy-Item $photon `
-    (Join-Path $dest 'node_modules/@silvia-odwyer/photon-node') -Recurse -Force
+  Copy-Tree $photon 'node_modules/@silvia-odwyer/photon-node'
 } else {
   Write-Warning 'photon-node not found; non-PNG image conversion will be skipped'
 }
@@ -120,7 +126,7 @@ if (Test-Path $photon) {
 foreach ($dep in @('@earendil-works/chord', 'jiti')) {
   $src = Join-Path $piDir "node_modules/$dep"
   if (-not (Test-Path $src)) { throw "missing $src; is pi $version intact?" }
-  Copy-Item $src (Join-Path $dest "node_modules/$dep") -Recurse -Force
+  Copy-Tree $src "node_modules/$dep"
 }
 
 $bin = Join-Path $dest 'bin'
