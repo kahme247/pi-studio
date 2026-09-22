@@ -385,11 +385,6 @@ class SessionController extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> _loadHistory() async {
-    final messages = await _client!.getMessages();
-    _setHistory(messages);
-  }
-
   void _setHistory(List<dynamic> messages) {
     _history = messages
         .whereType<Map>()

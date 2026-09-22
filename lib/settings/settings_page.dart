@@ -3259,8 +3259,9 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     final headers = <String, String>{};
     if (rawHeaders is Map) {
       for (final entry in rawHeaders.entries) {
-        if (entry.value is String)
+        if (entry.value is String) {
           headers['${entry.key}'] = entry.value as String;
+        }
       }
     }
 
