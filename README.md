@@ -37,8 +37,14 @@ to `pi --mode rpc` over strict JSONL.
 
 ```
 lib/
-  main.dart                     UI: sidebar, transcript, composer, right rail
-  pi/pi_client.dart             `pi --mode rpc` client (JSONL framing, commands, events)
+  main.dart                     UI shell: title bar, sidebar, transcript, composer, rail
+  ui/app_theme.dart             Design tokens: surfaces, text ramp, accents, motion
+  ui/primitives.dart            Shared leaves: hover tint, code box, splitter, rail tabs
+  ui/transcript_view.dart       Transcript: chat items, activity, scrubber, skeleton
+  ui/review_pane.dart           Review rail: diff view, file tree, terminal panel
+  ui/session_chrome.dart        Session chrome: rows, pills, ring, title bar, menus
+  pi/pi_client.dart             Backend client: bundled pi_runtime/ or `pi` on PATH (JSONL RPC)
+  pi/pi_runtime.dart            Bundled-vs-PATH backend resolution (`pi_runtime/`, `PI_STUDIO_PI`)
   pi/session_store.dart         Session discovery in ~/.pi/agent/sessions
   state/session_controller.dart One session = one pi process + transcript state
   state/projects_store.dart     Persisted project + archive lists
@@ -63,11 +69,25 @@ flutter pub get
 flutter build windows --release   # -> build\windows\x64\runner\Release\
 ```
 
+Release builds bundle the pi backend so users need no install: the release
+workflow installs the pinned `@earendil-works/pi-coding-agent` (`PI_VERSION`
+in `.github/workflows/release.yml`) plus Node 22, then runs
+`tool/stage_pi_runtime.ps1` (Windows) or `tool/stage_pi_runtime.sh` (Linux)
+to stage `pi_runtime/` (node binary + pi bundle) next to the app executable.
+The app prefers the bundled runtime and falls back to `pi` on PATH, so local
+dev builds keep working without staging anything. Override with the
+`PI_STUDIO_PI` env var (path to a `pi` executable) to test a different pi.
+
 Linux (requires clang, cmake, ninja, pkg-config, libgtk-3-dev):
 
 ```bash
 flutter build linux --release     # -> build/linux/x64/release/bundle/
 ```
+
+On Linux the app keeps the native GTK header bar (the custom title bar and
+resize bands are Windows-only), opens files with `xdg-open`, and uses
+zenity/kdialog for the folder picker when installed (otherwise a text
+prompt).
 
 An Inno Setup script for the Windows installer lives at `installer.iss`.
 
@@ -97,7 +117,9 @@ Two further constraints, both learned the hard way:
 
 ## Requirements
 
-- The `pi` CLI on `PATH` (`npm install -g @earendil-works/pi-coding-agent`).
+- Node 22+ and the `pi` CLI are only needed for dev builds (the app falls back
+  to `pi` on PATH when no bundled runtime is staged). Release builds ship
+  their own runtime: no install needed, just your provider API keys.
 - Windows 10/11, or a Linux desktop with GTK 3.
 - `git` for worktrees and diffs (optional).
 

@@ -1,3 +1,4 @@
+---
 name: Release
 
 # Pushing a tag like v1.0.1 builds every platform on GitHub's runners and
@@ -5,7 +6,7 @@ name: Release
 #
 # A manual run from the Actions tab only builds and uploads the artifacts, so
 # the pipeline can be exercised without publishing anything.
-on:
+"on":
   push:
     tags: ['v*']
   workflow_dispatch:
@@ -16,15 +17,29 @@ permissions:
 env:
   # Keep in step with the README's requirement and the local toolchain.
   FLUTTER_VERSION: 3.47.5
+  # Pinned pi backend bundled into pi_runtime/ by tool/stage_pi_runtime.*.
+  # Bump deliberately: the app ships whatever version this names.
+  PI_VERSION: 0.87.0
+  NODE_VERSION: 22
+  # npm scope of the pi backend package; factored out so install lines stay
+  # within the line-length limit.
+  PI_NPM_SCOPE: '@earendil-works/pi-coding-agent'
 
 jobs:
   windows:
     name: Windows x64
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned: checkout v4.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: subosito/flutter-action@v2
+      # Pinned: setup-node v4.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Pinned: flutter-action v2.
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
@@ -37,21 +52,42 @@ jobs:
         run: flutter analyze
 
       # Serialised on purpose: compiling several test files in parallel
-      # intermittently kills a test isolate before it starts, which shows up as
-      # "did not complete" with no exception.
+      # intermittently kills a test isolate before it starts, which shows up
+      # as "did not complete" with no exception.
       - name: Test
         run: flutter test --concurrency=1
 
       - name: Build
         run: flutter build windows --release
 
-      - name: Package Windows artifacts
+      - name: Stage bundled pi runtime
         shell: pwsh
         run: |
-          $version = if ('${{ github.ref_type }}' -eq 'tag') {
-            '${{ github.ref_name }}'.TrimStart('v')
+          # setup-node (top of this job) provides the node staged into
+          # pi_runtime/bin; keep that step above the build.
+          $node = (Get-Command node).Source
+          & $node --version
+          $pkg = '{0}@{1}' -f $env:PI_NPM_SCOPE, $env:PI_VERSION
+          npm install -g --ignore-scripts $pkg
+          if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+          $piDir = Join-Path (& npm root -g) $env:PI_NPM_SCOPE
+          $env:PI_STUDIO_NODE_EXE = $node
+          $env:PI_STUDIO_PI_DIR = $piDir
+          $out = 'build/windows/x64/runner/Release'
+          ./tool/stage_pi_runtime.ps1 -OutputDir $out
+
+      - name: Package Windows artifacts
+        shell: pwsh
+        env:
+          GH_REF_TYPE: ${{ github.ref_type }}
+          GH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          if ($env:GH_REF_TYPE -eq 'tag') {
+            $version = $env:GH_REF_NAME.TrimStart('v')
           } else {
-            (Select-String -Path pubspec.yaml -Pattern '^version:\s+([0-9]+\.[0-9]+\.[0-9]+)').Matches[0].Groups[1].Value
+            $match = Select-String -Path pubspec.yaml `
+              -Pattern '^version:\s+([0-9]+\.[0-9]+\.[0-9]+)'
+            $version = $match.Matches[0].Groups[1].Value
           }
           Write-Host "Packaging $version"
 
@@ -73,12 +109,16 @@ jobs:
           # tar, not Compress-Archive: the latter writes backslash path
           # separators, which are not valid ZIP paths and break extraction on
           # anything but Windows Explorer.
-          tar.exe -a -c -f "dist\PiStudio-$version-Portable-x64.zip" -C $release @items
+          $zip = "dist\PiStudio-$version-Portable-x64.zip"
+          tar.exe -a -c -f $zip -C $release @items
           if ($LASTEXITCODE -ne 0) { throw 'tar failed' }
 
-          Get-ChildItem dist | ForEach-Object { Write-Host "  $($_.Name)  $($_.Length) bytes" }
+          Get-ChildItem dist | ForEach-Object {
+            Write-Host "  $($_.Name)  $($_.Length) bytes"
+          }
 
-      - uses: actions/upload-artifact@v4
+      # Pinned: upload-artifact v4.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows
           path: dist/*
@@ -88,14 +128,17 @@ jobs:
     name: Linux x64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned: checkout v4.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install GTK build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev
 
-      - uses: subosito/flutter-action@v2
+      # Pinned: flutter-action v2.
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
@@ -103,18 +146,36 @@ jobs:
 
       - run: flutter pub get
 
-      # Analyze but do not test here: the widget tests are verified on Windows,
-      # and a platform-specific failure should not block a release.
+      # Analyze but do not test here: the widget tests are verified on
+      # Windows, and a platform-specific failure should not block a release.
       - run: flutter analyze
 
+      # Pinned: setup-node v4.
+      - name: Install pinned node for the bundled pi runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - run: flutter build linux --release
+
+      - name: Stage bundled pi runtime
+        run: |
+          # setup-node's node is the binary staged into pi_runtime/bin.
+          echo "node: $(node --version) from $(command -v node)"
+          pkg="$PI_NPM_SCOPE@$PI_VERSION"
+          npm install -g --ignore-scripts "$pkg"
+          export PI_STUDIO_NODE_EXE="$(command -v node)"
+          pi_dir="$(npm root -g)/$PI_NPM_SCOPE"
+          export PI_STUDIO_PI_DIR="$pi_dir"
+          ./tool/stage_pi_runtime.sh build/linux/x64/release/bundle
 
       - name: Package Linux tarball
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="$(grep -m1 '^version:' pubspec.yaml | sed -E 's/version: *([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+            version="$(grep -m1 '^version:' pubspec.yaml | sed -E \
+              's/version: *([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
           fi
           echo "Packaging $version"
           mkdir -p dist
@@ -122,7 +183,8 @@ jobs:
             -C build/linux/x64/release/bundle .
           ls -la dist
 
-      - uses: actions/upload-artifact@v4
+      # Pinned: upload-artifact v4.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: linux
           path: dist/*
@@ -134,7 +196,8 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      # Pinned: download-artifact v4.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist
           merge-multiple: true

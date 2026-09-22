@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-/// Minimal client for `pi --mode rpc`.
+import 'pi_runtime.dart';
+
+/// Minimal client for the pi backend over RPC.
 ///
 /// Protocol: https://pi.dev/docs/latest/rpc — strict JSONL over stdin/stdout.
 /// LF is the only record delimiter, so we split by hand: generic line readers
@@ -31,25 +33,27 @@ class PiClient {
 
   Future<void> start({String? sessionName}) async {
     if (_process != null) return;
+    // Bundled pi_runtime/ wins; falls back to `pi` on PATH so dev builds
+    // (which never stage the runtime) keep working with no extra setup.
+    final backend = await PiRuntime.resolve();
     final args = <String>[
-      '--mode',
-      'rpc',
+      ...backend.baseArgs,
       if (sessionName != null && sessionName.trim().isNotEmpty)
         ...['--name', sessionName.trim()],
     ];
     try {
       _process = await Process.start(
-        'pi',
+        backend.executable,
         args,
         workingDirectory: workingDirectory,
-        // npm installs `pi` as a .cmd shim on Windows.
-        runInShell: Platform.isWindows,
+        runInShell: backend.runInShell,
       );
     } on ProcessException catch (e) {
       _closed = true;
       throw StateError(
-        'Could not start the pi CLI: $e\n'
-        'Install it first: npm install -g @earendil-works/pi-coding-agent',
+        'Could not start the pi backend (${backend.label}): $e\n'
+        'Install pi on PATH to use dev builds: '
+        'npm install -g @earendil-works/pi-coding-agent',
       );
     }
     _process!.stdout.transform(utf8.decoder).listen(_onStdout);

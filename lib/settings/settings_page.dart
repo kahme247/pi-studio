@@ -1,18 +1,22 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+
 import '../pi/session_store.dart';
 import 'model_discovery.dart';
 import 'pi_models.dart';
+import 'pi_packages.dart';
 import 'pi_settings.dart';
 
 /// Reduced-motion-aware duration, matching the rest of the app.
 Duration _ms(BuildContext context, [int ms = 140]) =>
     MediaQuery.of(context).disableAnimations
-        ? Duration.zero
-        : Duration(milliseconds: ms);
+    ? Duration.zero
+    : Duration(milliseconds: ms);
 
 /// Sections of the settings page. Order here is the order in the nav rail.
 enum SettingsSection {
@@ -65,6 +69,7 @@ class SettingsPage extends StatefulWidget {
     required this.models,
     required this.onClose,
     this.availableModels = const [],
+    this.projectDir,
     super.key,
   });
 
@@ -77,6 +82,12 @@ class SettingsPage extends StatefulWidget {
 
   /// Provider/model pairs harvested from a live session, when one is open.
   final List<({String provider, String id, String label})> availableModels;
+
+  /// Active session's project dir, when one is open. The package manager
+  /// scopes `pi list`/`remove` through this: project-scope packages only
+  /// exist relative to a project (`.pi/settings.json`), so without it the
+  /// installed tab would silently miss the `-l` half of the world.
+  final String? projectDir;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -136,16 +147,14 @@ class _SettingsPageState extends State<SettingsPage> {
               // Only blank the page on the very first read. A refresh on
               // reopen keeps the current content up instead of flashing a
               // spinner over it.
-              child: _s.loading && _m.loading && _s.keys.isEmpty && _m.keys.isEmpty
+              child:
+                  _s.loading && _m.loading && _s.keys.isEmpty && _m.keys.isEmpty
                   ? const Center(child: CircularProgressIndicator())
                   : Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         _navRail(theme),
-                        VerticalDivider(
-                          width: 1,
-                          color: theme.dividerColor,
-                        ),
+                        VerticalDivider(width: 1, color: theme.dividerColor),
                         Expanded(child: _content(theme)),
                       ],
                     ),
@@ -199,10 +208,7 @@ class _SettingsPageState extends State<SettingsPage> {
           if (_dirty) ...[
             Text('Unsaved changes', style: theme.textTheme.labelSmall),
             const SizedBox(width: 12),
-            TextButton(
-              onPressed: _discard,
-              child: const Text('Discard'),
-            ),
+            TextButton(onPressed: _discard, child: const Text('Discard')),
           ],
           const SizedBox(width: 4),
           FilledButton(
@@ -305,7 +311,8 @@ class _SettingsPageState extends State<SettingsPage> {
             child: _Entry(
               value: _s.readString('defaultProvider') ?? '',
               hint: 'provider',
-              onChanged: (v) => _s.write('defaultProvider', v.isEmpty ? null : v),
+              onChanged: (v) =>
+                  _s.write('defaultProvider', v.isEmpty ? null : v),
             ),
           ),
           _Row(
@@ -822,7 +829,8 @@ class _SettingsPageState extends State<SettingsPage> {
             child: _Entry(
               value: _s.readString('externalEditor') ?? '',
               hint: r'(from $VISUAL / $EDITOR)',
-              onChanged: (v) => _s.write('externalEditor', v.isEmpty ? null : v),
+              onChanged: (v) =>
+                  _s.write('externalEditor', v.isEmpty ? null : v),
             ),
           ),
           _Row(
@@ -867,19 +875,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   List<Widget> _resources(ThemeData theme) {
     return [
-      _Card(
-        title: 'Packages',
-        description:
-            'npm or git packages pi loads resources from, e.g. '
-            'npm:@scope/name or a repo URL.',
-        children: [
-          _List(
-            values: _s.readList('packages'),
-            hint: 'npm:package or git URL',
-            onChanged: (v) => _s.writeList('packages', v),
-          ),
-        ],
-      ),
+      _PackageManagerCard(settings: _s, projectDir: widget.projectDir),
       _Card(
         title: 'Local resources',
         description:
@@ -1011,8 +1007,7 @@ class _SettingsPageState extends State<SettingsPage> {
       'enableInstallTelemetry',
       'enableAnalytics',
     };
-    final unmanaged =
-        _s.keys.where((key) => !managed.contains(key)).toList();
+    final unmanaged = _s.keys.where((key) => !managed.contains(key)).toList();
 
     return [
       _Card(
@@ -1041,12 +1036,13 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Align(
               alignment: Alignment.centerRight,
               child: TextButton.icon(
-                onPressed: () => Process.start('explorer', [
-                  '/select,',
-                  _s.path,
-                ]),
+                onPressed: () => Platform.isWindows
+                    ? Process.start('explorer', ['/select,', _s.path])
+                    : Process.start('xdg-open', [File(_s.path).parent.path]),
                 icon: const Icon(Icons.folder_open, size: 15),
-                label: const Text('Show in Explorer'),
+                label: Text(
+                  Platform.isWindows ? 'Show in Explorer' : 'Show in Files',
+                ),
               ),
             ),
           ),
@@ -1055,8 +1051,9 @@ class _SettingsPageState extends State<SettingsPage> {
               padding: const EdgeInsets.only(top: 6),
               child: Text(
                 _s.error!,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.error),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
               ),
             ),
         ],
@@ -1088,8 +1085,9 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                       child: Text(
                         key,
-                        style: theme.textTheme.labelSmall
-                            ?.copyWith(fontFamily: 'GeistMono'),
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          fontFamily: 'GeistMono',
+                        ),
                       ),
                     ),
                 ],
@@ -1138,13 +1136,13 @@ class _NavTileState extends State<_NavTile> {
     final background = selected
         ? theme.colorScheme.primary.withValues(alpha: 0.14)
         : (_hovered
-            ? theme.colorScheme.onSurface.withValues(alpha: 0.07)
-            : Colors.transparent);
+              ? theme.colorScheme.onSurface.withValues(alpha: 0.07)
+              : Colors.transparent);
     final foreground = selected
         ? theme.colorScheme.primary
         : (_hovered
-            ? theme.colorScheme.onSurface
-            : theme.colorScheme.onSurfaceVariant);
+              ? theme.colorScheme.onSurface
+              : theme.colorScheme.onSurfaceVariant);
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
       child: MouseRegion(
@@ -1170,8 +1168,7 @@ class _NavTileState extends State<_NavTile> {
                   widget.section.label,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: foreground,
-                    fontWeight:
-                        selected ? FontWeight.w600 : FontWeight.w500,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                   ),
                 ),
               ],
@@ -1186,11 +1183,7 @@ class _NavTileState extends State<_NavTile> {
 // ------------------------------------------------------------- containers
 
 class _Card extends StatelessWidget {
-  const _Card({
-    required this.title,
-    this.description,
-    required this.children,
-  });
+  const _Card({required this.title, this.description, required this.children});
 
   final String title;
   final String? description;
@@ -1217,8 +1210,9 @@ class _Card extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 3),
                 child: Text(
                   description!,
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: theme.hintColor),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.hintColor,
+                  ),
                 ),
               ),
             if (children.isNotEmpty) const SizedBox(height: 6),
@@ -1255,8 +1249,9 @@ class _Row extends StatelessWidget {
                     padding: const EdgeInsets.only(top: 1),
                     child: Text(
                       hint!,
-                      style: theme.textTheme.labelSmall
-                          ?.copyWith(color: theme.hintColor),
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.hintColor,
+                      ),
                     ),
                   ),
               ],
@@ -1296,14 +1291,18 @@ class _InfoRow extends StatelessWidget {
             width: 150,
             child: Text(
               label,
-              style: theme.textTheme.bodySmall?.copyWith(color: theme.hintColor),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.hintColor,
+              ),
             ),
           ),
           Expanded(
             child: SelectableText(
               value,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(fontFamily: 'GeistMono', fontSize: 12),
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'GeistMono',
+                fontSize: 12,
+              ),
             ),
           ),
           if (copyable)
@@ -1312,12 +1311,1292 @@ class _InfoRow extends StatelessWidget {
               iconSize: 14,
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: value));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Copied')),
-                );
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(const SnackBar(content: Text('Copied')));
               },
               icon: const Icon(Icons.copy_outlined),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+// ------------------------------------------------------- package manager
+
+/// Pendant-style package manager: installed list plus an npm `pi-package`
+/// catalog, living inside the Resources section.
+///
+/// Installed state is read from live `pi list` runs (not just the `packages`
+/// key in settings.json, which cannot show install paths or project scope).
+/// Mutations shell out to the real `pi` CLI (`install` / `remove` /
+/// `update`) so dependency fetching and settings writes behave exactly like
+/// the terminal. After a mutation the settings file is reloaded so the rest
+/// of the page reflects what pi wrote.
+class _PackageManagerCard extends StatefulWidget {
+  const _PackageManagerCard({required this.settings, this.projectDir});
+
+  final PiSettings settings;
+
+  /// Active session's project dir; see [SettingsPage.projectDir]. Null in
+  /// widget tests (they build `SettingsPage` directly with no session).
+  final String? projectDir;
+
+  @override
+  State<_PackageManagerCard> createState() => _PackageManagerCardState();
+}
+
+class _PackageManagerCardState extends State<_PackageManagerCard>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabs;
+
+  // Installed tab.
+  var _installedLoading = true;
+  var _installedRefreshing = false;
+  var _installedLoadedOnce = false;
+  var _refreshInFlight = false;
+  List<PiPackage> _installed = const [];
+  String? _installedError;
+  String? _busySource; // source with a remove/update in flight
+  var _updatingAll = false;
+  String? _notice;
+  var _noticeIsError = false;
+  String? _lastOutput; // collapsed CLI output of the last mutation
+  // One-shot flag: set on successful custom installs so the source row
+  // clears its field exactly once (failures keep the text for editing).
+  var _clearInstallInput = false;
+
+  // Discover tab.
+  final _searchController = TextEditingController();
+  var _catalogLoading = false;
+  var _catalogLoadingMore = false;
+  var _catalogFrom = 0;
+  var _catalogTotal = 0;
+  var _catalogOffline = false;
+  var _catalog = const <NpmCatalogEntry>[];
+  String? _catalogError;
+  String? _installingName; // catalog entry with an install in flight
+  Timer? _searchDebounce;
+  var _searchGen = 0; // generation counter: stale search responses are dropped
+  String _searchQuery = ''; // query that produced the current catalog page
+
+  /// Guard so concurrent `pi install/remove/update` processes never race on
+  /// settings.json: exactly one mutation runs at a time.
+  var _mutationInFlight = false;
+
+  // Detail sheet (shared by both tabs).
+  NpmCatalogEntry? _detailEntry;
+  Map<String, dynamic>? _detailDoc;
+  var _detailLoading = false;
+  String? _detailError;
+  final _docCache = <String, Map<String, dynamic>>{};
+
+  /// True while any pi mutation runs; disables every mutation button so two
+  /// `pi` processes never race on settings.json.
+  bool get _mutationBusy =>
+      _mutationInFlight || _updatingAll || _busySource != null;
+
+  PiCli? _resolvedCli;
+  PiCli get _cli => _resolvedCli ??= PiCli.resolve();
+
+  @override
+  void initState() {
+    super.initState();
+    _tabs = TabController(length: 2, vsync: this);
+    // Widget tests drive this page with an in-memory store inside a
+    // fake-async zone, where real dart:io futures (Process.run, HttpClient)
+    // never complete and leave pending timers behind. Skip the live loads
+    // there; the real app always passes a file-backed store.
+    if (widget.settings.path.isEmpty) {
+      _installedLoading = false;
+      return;
+    }
+    _refreshInstalled();
+    _searchCatalog();
+  }
+
+  @override
+  void dispose() {
+    _tabs.dispose();
+    _searchController.dispose();
+    _searchDebounce?.cancel();
+    super.dispose();
+  }
+
+  // ------------------------------------------------------------ installed
+
+  Future<void> _refreshInstalled() async {
+    if (_refreshInFlight) return;
+    _refreshInFlight = true;
+    setState(() {
+      if (!_installedLoadedOnce) {
+        _installedLoading = true;
+      } else {
+        _installedRefreshing = true;
+      }
+      _installedError = null;
+    });
+    final result = await _cli.run(
+      ['list'],
+      timeout: const Duration(seconds: 30),
+      // Project scope lives in `<projectDir>/.pi/settings.json`, so `pi
+      // list` must run with the project as CWD to see it. Without a session
+      // open there is no project — user scope only.
+      workingDirectory: widget.projectDir,
+    );
+    _refreshInFlight = false;
+    if (!mounted) return;
+    setState(() {
+      _installedLoading = false;
+      _installedRefreshing = false;
+      _installedLoadedOnce = true;
+      if (result.ok) {
+        _installed = parsePiList(result.stdout);
+      } else {
+        _installedError = result.output.isEmpty
+            ? 'pi list failed (exit ${result.exitCode})'
+            : result.output;
+      }
+    });
+  }
+
+  /// Reload settings.json from disk after pi rewrote it, so the legacy
+  /// `packages` list and every other section reflect the CLI's changes.
+  Future<void> _reloadSettings() async {
+    await widget.settings.load();
+  }
+
+  Future<void> _remove(PiPackage package) async {
+    // Same source can exist in both scopes (`pi list` shows both rows); the
+    // removal must target the row the button belonged to, or the wrong
+    // settings file gets edited.
+    final duplicates = _installed
+        .where((p) => p.source == package.source)
+        .map((p) => p.scope)
+        .toSet();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove package?'),
+        content: Text(
+          'Runs `pi remove ${package.source}`'
+          '${package.scope == 'project' ? ' -l' : ''} '
+          '(${package.scope} scope). '
+          '${duplicates.length > 1 ? 'The same source is also installed in the ${duplicates.firstWhere((s) => s != package.scope)} scope — only the ${package.scope} copy is removed. ' : ''}'
+          'The package source is removed from settings.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    if (_mutationBusy) return;
+    setState(() {
+      _mutationInFlight = true;
+      _busySource = package.source;
+      _notice = null;
+      _lastOutput = null;
+      _noticeIsError = false;
+    });
+    final result = await _cli.run(
+      ['remove', package.source, if (package.scope == 'project') '-l'],
+      timeout: const Duration(minutes: 2),
+      workingDirectory: widget.projectDir,
+    );
+    try {
+      await _reloadSettings();
+    } finally {
+      if (mounted) setState(() => _busySource = null);
+    }
+    await _refreshInstalled();
+    if (!mounted) {
+      _mutationInFlight = false;
+      return;
+    }
+    setState(() {
+      _mutationInFlight = false;
+      if (result.ok) {
+        _notice = 'Removed ${package.source}.';
+      } else {
+        _lastOutput = result.output;
+        _notice = 'Remove failed (exit ${result.exitCode}).';
+        _noticeIsError = true;
+      }
+    });
+  }
+
+  Future<void> _update(PiPackage package) async {
+    if (_mutationBusy) return;
+    setState(() {
+      _mutationInFlight = true;
+      _busySource = package.source;
+      _notice = null;
+      _lastOutput = null;
+      _noticeIsError = false;
+    });
+    final result = await _cli.run(
+      // Positional source updates exactly this package (`pi update
+      // <source>` → `{type:"extensions", source}` in pi's arg parser).
+      // Only the bare words `self`/`pi` are special-cased to self-update,
+      // and real sources (`npm:…`, `git:…`, paths) never collide with
+      // those — so no `--extension` flag dance is needed.
+      ['update', package.source],
+      timeout: const Duration(minutes: 5),
+      workingDirectory: widget.projectDir,
+    );
+    try {
+      await _reloadSettings();
+    } finally {
+      if (mounted) setState(() => _busySource = null);
+    }
+    await _refreshInstalled();
+    if (!mounted) {
+      _mutationInFlight = false;
+      return;
+    }
+    setState(() {
+      _mutationInFlight = false;
+      if (result.ok) {
+        _notice = 'Updated ${package.source}.';
+        _lastOutput = result.output.isEmpty ? null : result.output;
+      } else {
+        _lastOutput = result.output;
+        _notice = 'Update failed (exit ${result.exitCode}).';
+        _noticeIsError = true;
+      }
+    });
+  }
+
+  Future<void> _updateAll() async {
+    if (_mutationBusy) return;
+    setState(() {
+      _mutationInFlight = true;
+      _updatingAll = true;
+      _notice = null;
+      _lastOutput = null;
+      _noticeIsError = false;
+    });
+    final result = await _cli.run(
+      ['update', '--extensions'],
+      timeout: const Duration(minutes: 10),
+      workingDirectory: widget.projectDir,
+    );
+    try {
+      await _reloadSettings();
+    } finally {
+      if (mounted) setState(() => _updatingAll = false);
+    }
+    await _refreshInstalled();
+    if (!mounted) {
+      _mutationInFlight = false;
+      return;
+    }
+    setState(() {
+      _mutationInFlight = false;
+      if (result.ok) {
+        _notice = 'All packages updated.';
+        _lastOutput = result.output.isEmpty ? null : result.output;
+      } else {
+        _lastOutput = result.output;
+        _notice = 'Update all failed (exit ${result.exitCode}).';
+        _noticeIsError = true;
+      }
+    });
+  }
+
+  // ------------------------------------------------------------- catalog
+
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
+      _searchCatalog(query: value);
+    });
+  }
+
+  Future<void> _searchCatalog({String? query}) async {
+    final text = (query ?? _searchController.text).trim();
+    final generation = ++_searchGen;
+    setState(() {
+      _catalogLoading = true;
+      _catalogError = null;
+      _catalogOffline = false;
+      _catalogFrom = 0;
+      _searchQuery = text;
+    });
+    try {
+      final page = await searchNpmCatalog(query: text, size: 25);
+      if (!mounted || generation != _searchGen) return;
+      setState(() {
+        _catalogLoading = false;
+        _catalog = page.entries;
+        _catalogTotal = page.total;
+        _catalogFrom = page.entries.length;
+      });
+    } on SocketException {
+      if (!mounted || generation != _searchGen) return;
+      setState(() {
+        _catalogLoading = false;
+        _catalogOffline = true;
+      });
+    } catch (e) {
+      if (!mounted || generation != _searchGen) return;
+      setState(() {
+        _catalogLoading = false;
+        _catalogError = '$e';
+      });
+    }
+  }
+
+  Future<void> _loadMoreCatalog() async {
+    if (_catalogLoadingMore || _catalogFrom >= _catalogTotal) return;
+    // The query may have changed while the first page was in flight; only
+    // append when the field still matches the loaded page's query.
+    if (_searchController.text.trim() != _searchQuery) return;
+    final generation = _searchGen;
+    setState(() => _catalogLoadingMore = true);
+    try {
+      final page = await searchNpmCatalog(
+        query: _searchQuery,
+        size: 25,
+        from: _catalogFrom,
+      );
+      if (!mounted || generation != _searchGen) return;
+      setState(() {
+        _catalogLoadingMore = false;
+        _catalog = [..._catalog, ...page.entries];
+        _catalogTotal = page.total;
+        _catalogFrom += page.entries.length;
+      });
+    } catch (e) {
+      if (!mounted || generation != _searchGen) return;
+      setState(() {
+        _catalogLoadingMore = false;
+        _catalogError = '$e';
+      });
+    }
+  }
+
+  Future<void> _installFromCatalog(NpmCatalogEntry entry) async {
+    if (_mutationBusy) return;
+    setState(() {
+      _mutationInFlight = true;
+      _installingName = entry.name;
+      _notice = null;
+      _lastOutput = null;
+      _noticeIsError = false;
+    });
+    final result = await _cli.run(
+      ['install', entry.installSource],
+      timeout: const Duration(minutes: 5),
+      // Catalog installs always target user scope (no `-l`), so the CWD
+      // only matters for relative local paths — resolving those against
+      // the open project is the least surprising choice.
+      workingDirectory: widget.projectDir,
+    );
+    try {
+      await _reloadSettings();
+    } finally {
+      if (mounted) setState(() => _installingName = null);
+    }
+    await _refreshInstalled();
+    if (!mounted) {
+      _mutationInFlight = false;
+      return;
+    }
+    setState(() {
+      _mutationInFlight = false;
+      if (result.ok) {
+        _notice = 'Installed ${entry.installSource}.';
+      } else {
+        _lastOutput = result.output;
+        _notice = 'Install failed (exit ${result.exitCode}).';
+        _noticeIsError = true;
+      }
+    });
+  }
+
+  Future<void> _installCustom(String raw) async {
+    final source = raw.trim();
+    if (source.isEmpty || _mutationBusy) return;
+    setState(() {
+      _mutationInFlight = true;
+      _busySource = source;
+      _notice = null;
+      _lastOutput = null;
+      _noticeIsError = false;
+      _clearInstallInput = false;
+    });
+    final result = await _cli.run(
+      ['install', source],
+      timeout: const Duration(minutes: 5),
+      // Custom installs always target user scope (no `-l`), so the CWD
+      // only matters for relative local paths — resolving those against
+      // the open project is the least surprising choice.
+      workingDirectory: widget.projectDir,
+    );
+    try {
+      await _reloadSettings();
+    } finally {
+      if (mounted) setState(() => _busySource = null);
+    }
+    await _refreshInstalled();
+    if (!mounted) {
+      _mutationInFlight = false;
+      return;
+    }
+    setState(() {
+      _mutationInFlight = false;
+      if (result.ok) {
+        _notice = 'Installed $source.';
+        _clearInstallInput = true;
+      } else {
+        // Keep `_clearInstallInput` false: the typed source stays in the
+        // field so a typo can be fixed instead of retyped.
+        _lastOutput = result.output;
+        _notice = 'Install failed (exit ${result.exitCode}).';
+        _noticeIsError = true;
+      }
+    });
+  }
+
+  // -------------------------------------------------------------- detail
+
+  void _openDetail(NpmCatalogEntry entry) {
+    final cached = _docCache[entry.name];
+    setState(() {
+      _detailEntry = entry;
+      _detailDoc = cached;
+      _detailError = null;
+      _detailLoading = cached == null;
+    });
+    if (cached != null) return;
+    fetchNpmDoc(entry.name)
+        .then((doc) {
+          if (!mounted) return;
+          _docCache[entry.name] = doc;
+          setState(() {
+            if (_detailEntry?.name == entry.name) {
+              _detailDoc = doc;
+              _detailLoading = false;
+            }
+          });
+        })
+        .catchError((Object e) {
+          if (!mounted) return null;
+          setState(() {
+            if (_detailEntry?.name == entry.name) {
+              _detailLoading = false;
+              _detailError = '$e';
+            }
+          });
+          return null;
+        });
+  }
+
+  void _closeDetail() => setState(() => _detailEntry = null);
+
+  // ---------------------------------------------------------------- build
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return _PkgCard(
+      title: 'Packages',
+      description:
+          'Pi packages bundle extensions, skills, prompt templates and '
+          'themes. Installs run the real pi CLI, so dependencies are '
+          'fetched exactly like in the terminal.',
+      trailing: _installedRefreshing
+          ? const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : IconButton(
+              tooltip: 'Refresh',
+              iconSize: 15,
+              onPressed: () {
+                _refreshInstalled();
+                _searchCatalog();
+              },
+              icon: const Icon(Icons.refresh),
+            ),
+      children: [
+        if (_notice != null)
+          _NoticeBanner(
+            message: _notice!,
+            isError: _noticeIsError,
+            output: _lastOutput,
+            onDismiss: () => setState(() {
+              _notice = null;
+              _noticeIsError = false;
+              _lastOutput = null;
+            }),
+          ),
+        TabBar(
+          controller: _tabs,
+          tabs: [
+            Tab(text: 'Installed (${_installed.length})'),
+            const Tab(text: 'Discover'),
+          ],
+        ),
+        SizedBox(
+          height: 380,
+          child: TabBarView(
+            controller: _tabs,
+            children: [_installedTab(theme), _discoverTab(theme)],
+          ),
+        ),
+        if (_detailEntry != null) _detailSheet(theme),
+      ],
+    );
+  }
+
+  Widget _installedTab(ThemeData theme) {
+    if (_installedLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_installedError != null) {
+      return _ErrorBlock(message: _installedError!, onRetry: _refreshInstalled);
+    }
+    if (_installed.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Text(
+          'No packages installed. Discover community packages next door, '
+          'or install one by source below.',
+          style: theme.textTheme.bodySmall?.copyWith(color: theme.hintColor),
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
+    final user = _installed.where((p) => p.scope == 'user').toList();
+    final project = _installed.where((p) => p.scope == 'project').toList();
+    // Null projectDir means `pi list` ran without a project CWD, so a
+    // missing Project section means "no project open", not "project is
+    // empty" — say so instead of implying a clean project.
+    final showProjectHint = widget.projectDir == null && _installedLoadedOnce;
+    return ListView(
+      shrinkWrap: true,
+      children: [
+        if (user.isNotEmpty) ...[
+          _ScopeLabel('User — ~/.pi/agent'),
+          for (final package in user) _packageRow(theme, package),
+        ],
+        if (project.isNotEmpty) ...[
+          _ScopeLabel('Project — .pi/settings.json'),
+          for (final package in project) _packageRow(theme, package),
+        ] else if (showProjectHint)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              'Open a session to see project packages.',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.hintColor,
+              ),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: _mutationBusy ? null : _updateAll,
+              icon: _updatingAll
+                  ? const SizedBox(
+                      width: 13,
+                      height: 13,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.system_update_alt, size: 15),
+              label: Text(_updatingAll ? 'Updating…' : 'Update all'),
+            ),
+          ),
+        ),
+        _InstallBySourceRow(
+          busy: _mutationBusy,
+          onInstall: _installCustom,
+          clearInstallInput: _clearInstallInput,
+          onCleared: () {
+            if (mounted) setState(() => _clearInstallInput = false);
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _packageRow(ThemeData theme, PiPackage package) {
+    final busy = _busySource == package.source;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(10, 7, 6, 7),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _KindIcon(kind: package.kind),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SelectableText(
+                      package.source,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontFamily: 'GeistMono',
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (package.filtered)
+                      Text(
+                        'filtered — narrowed by settings filters',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.hintColor,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (busy)
+                const SizedBox(
+                  width: 15,
+                  height: 15,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else ...[
+                IconButton(
+                  tooltip: 'Update',
+                  iconSize: 15,
+                  onPressed: _mutationBusy ? null : () => _update(package),
+                  icon: const Icon(Icons.system_update_alt),
+                ),
+                IconButton(
+                  tooltip: 'Remove',
+                  iconSize: 15,
+                  onPressed: _mutationBusy ? null : () => _remove(package),
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
+            ],
+          ),
+          if (package.installedPath != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, left: 29),
+              child: SelectableText(
+                package.installedPath!,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontFamily: 'GeistMono',
+                  color: theme.hintColor,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _discoverTab(ThemeData theme) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: TextField(
+            controller: _searchController,
+            onChanged: _onSearchChanged,
+            onSubmitted: (_) => _searchCatalog(),
+            decoration: InputDecoration(
+              hintText: 'Search pi packages on npm…',
+              prefixIcon: const Icon(Icons.search, size: 16),
+              suffixIcon: _catalogLoading
+                  ? const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : null,
+            ),
+            style: const TextStyle(fontSize: 13),
+          ),
+        ),
+        Expanded(child: _catalogBody(theme)),
+      ],
+    );
+  }
+
+  Widget _catalogBody(ThemeData theme) {
+    if (_catalogLoading && _catalog.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_catalogOffline && _catalog.isEmpty) {
+      return _ErrorBlock(
+        message: 'No network connection — showing installed packages only.',
+        onRetry: () => _searchCatalog(),
+        retryLabel: 'Retry',
+      );
+    }
+    if (_catalogError != null && _catalog.isEmpty) {
+      return _ErrorBlock(
+        message: _catalogError!,
+        onRetry: () => _searchCatalog(),
+      );
+    }
+    if (_catalog.isEmpty) {
+      return Center(
+        child: Text(
+          'No pi packages found.',
+          style: theme.textTheme.bodySmall?.copyWith(color: theme.hintColor),
+        ),
+      );
+    }
+    // Compare by bare npm name (case-insensitive) so a version-pinned
+    // install (`npm:foo@1.2.3`) still counts as installed.
+    final installedNames = <String>{
+      for (final package in _installed)
+        if (package.npmName != null) package.npmName!.toLowerCase(),
+    };
+    return ListView.builder(
+      itemCount: _catalog.length + 1,
+      itemBuilder: (context, index) {
+        if (index == _catalog.length) {
+          final remaining = _catalogTotal - _catalogFrom;
+          if (remaining <= 0) return const SizedBox(height: 8);
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Center(
+              child: _catalogLoadingMore
+                  ? const SizedBox(
+                      width: 15,
+                      height: 15,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : TextButton(
+                      onPressed: _loadMoreCatalog,
+                      child: Text('Show more ($remaining remaining)'),
+                    ),
+            ),
+          );
+        }
+        final entry = _catalog[index];
+        final installed = installedNames.contains(entry.name.toLowerCase());
+        final installing = _installingName == entry.name;
+        return Container(
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.fromLTRB(10, 7, 6, 7),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: theme.dividerColor),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: InkWell(
+                  onTap: () => _openDetail(entry),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              entry.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                fontFamily: 'GeistMono',
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'v${entry.version}',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.hintColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (entry.description.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            entry.description,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.hintColor,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              if (installing)
+                const Padding(
+                  padding: EdgeInsets.all(6),
+                  child: SizedBox(
+                    width: 15,
+                    height: 15,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else if (installed)
+                const Padding(
+                  padding: EdgeInsets.all(6),
+                  child: Icon(Icons.check_circle_outline, size: 16),
+                )
+              else
+                TextButton(
+                  onPressed: _mutationBusy
+                      ? null
+                      : () => _installFromCatalog(entry),
+                  child: const Text('Install'),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _detailSheet(ThemeData theme) {
+    final entry = _detailEntry!;
+    final installed = _installed.any(
+      (package) => package.npmName?.toLowerCase() == entry.name.toLowerCase(),
+    );
+    final installing = _installingName == entry.name;
+    final doc = _detailDoc;
+    final readme = doc?['readme'] is String ? doc!['readme'] as String : null;
+    final description = doc?['description'] is String
+        ? doc!['description'] as String
+        : entry.description;
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: SelectableText(
+                  '${entry.name} v${entry.version}',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontFamily: 'GeistMono',
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              if (installing)
+                const SizedBox(
+                  width: 15,
+                  height: 15,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else if (!installed)
+                TextButton(
+                  onPressed: _mutationBusy
+                      ? null
+                      : () => _installFromCatalog(entry),
+                  child: const Text('Install'),
+                ),
+              IconButton(
+                tooltip: 'Close',
+                iconSize: 15,
+                onPressed: _closeDetail,
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+          if (description.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: SelectableText(
+                description,
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          if (_detailLoading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Center(
+                child: SizedBox(
+                  width: 15,
+                  height: 15,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            ),
+          if (_detailError != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                _detailError!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            )
+          else if (readme != null && readme.isNotEmpty)
+            Container(
+              constraints: const BoxConstraints(maxHeight: 220),
+              child: SingleChildScrollView(
+                child: MarkdownBody(
+                  data: _truncateRunes(_stripReadmeImages(readme), 20000),
+                  selectable: true,
+                  onTapLink: (_, _, _) {},
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ------------------------------------------------------- package widgets
+
+/// [_Card] with an optional trailing action (refresh button).
+class _PkgCard extends StatelessWidget {
+  const _PkgCard({
+    required this.title,
+    this.description,
+    this.trailing,
+    required this.children,
+  });
+
+  final String title;
+  final String? description;
+  final Widget? trailing;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Container(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: theme.dividerColor),
+        ),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(child: Text(title, style: theme.textTheme.titleSmall)),
+                ?trailing,
+              ],
+            ),
+            if (description != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text(
+                  description!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.hintColor,
+                  ),
+                ),
+              ),
+            if (children.isNotEmpty) const SizedBox(height: 6),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScopeLabel extends StatelessWidget {
+  const _ScopeLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 6, 2, 4),
+      child: Text(
+        text,
+        style: theme.textTheme.labelSmall?.copyWith(color: theme.hintColor),
+      ),
+    );
+  }
+}
+
+class _KindIcon extends StatelessWidget {
+  const _KindIcon({required this.kind});
+
+  final String kind;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final icon = switch (kind) {
+      'npm' => Icons.inventory_2_outlined,
+      'git' => Icons.code_outlined,
+      _ => Icons.folder_outlined,
+    };
+    return Icon(icon, size: 16, color: theme.hintColor);
+  }
+}
+
+/// Strips images from untrusted registry readmes before rendering: remote
+/// images would otherwise phone home (tracking pixels), and relative
+/// `images/foo.png` links have no base URL to resolve against. Done as
+/// string preprocessing (not `imageBuilder`) so no markdown-package API
+/// assumptions are needed.
+String _stripReadmeImages(String markdown) {
+  var out = markdown.replaceAllMapped(RegExp(r'!\[([^\]]*)\]\([^)]*\)'), (
+    match,
+  ) {
+    final alt = match.group(1)!;
+    return alt.isEmpty ? '[image]' : '[image: $alt]';
+  });
+  out = out.replaceAll(
+    RegExp(r'<img\b[^>]*>', caseSensitive: false),
+    '[image]',
+  );
+  return out;
+}
+
+/// Truncates to [maxRunes] unicode code points (not UTF-16 code units) so a
+/// surrogate pair is never split, then appends a truncation marker.
+String _truncateRunes(String text, int maxRunes) {
+  final runes = text.runes;
+  if (runes.length <= maxRunes) return text;
+  return '${String.fromCharCodes(runes.take(maxRunes))}\n\n…(truncated)';
+}
+
+class _NoticeBanner extends StatelessWidget {
+  const _NoticeBanner({
+    required this.message,
+    this.isError = false,
+    this.output,
+    required this.onDismiss,
+  });
+
+  final String message;
+  final bool isError;
+  final String? output;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = isError ? theme.colorScheme.error : theme.colorScheme.primary;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(message, style: theme.textTheme.bodySmall)),
+              IconButton(
+                tooltip: 'Dismiss',
+                iconSize: 14,
+                onPressed: onDismiss,
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+          if (output != null && output!.isNotEmpty)
+            Container(
+              constraints: const BoxConstraints(maxHeight: 140),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  output!,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontFamily: 'GeistMono',
+                    fontSize: 11,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ErrorBlock extends StatelessWidget {
+  const _ErrorBlock({
+    required this.message,
+    required this.onRetry,
+    this.retryLabel = 'Retry',
+  });
+
+  final String message;
+  final VoidCallback onRetry;
+  final String retryLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 20),
+      child: Column(
+        children: [
+          Text(
+            message,
+            style: theme.textTheme.bodySmall?.copyWith(color: theme.hintColor),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 6),
+          TextButton(onPressed: onRetry, child: Text(retryLabel)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Free-form `pi install <source>` row: npm specs, git URLs, local paths.
+class _InstallBySourceRow extends StatefulWidget {
+  const _InstallBySourceRow({
+    required this.busy,
+    required this.onInstall,
+    required this.onCleared,
+    this.clearInstallInput = false,
+  });
+
+  final bool busy;
+  final ValueChanged<String> onInstall;
+
+  /// Parent resets its one-shot clear flag after the row has cleared.
+  final VoidCallback onCleared;
+
+  /// Set for exactly one build after a successful install so the row clears
+  /// its field. Failures leave the typed source in place for editing.
+  final bool clearInstallInput;
+
+  @override
+  State<_InstallBySourceRow> createState() => _InstallBySourceRowState();
+}
+
+class _InstallBySourceRowState extends State<_InstallBySourceRow> {
+  final _controller = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // The parent rebuilds with `busy` toggles but the row keeps the same
+    // widget type, so without this listener the Install button would never
+    // re-evaluate `_controller.text.isEmpty` as the user types.
+    _controller.addListener(_onTextChanged);
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_onTextChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onTextChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(covariant _InstallBySourceRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Parent flips `clearInstallInput` true for exactly one build after a
+    // successful install: clear the field, then tell the parent to reset
+    // the flag (via a post-frame callback — no setState during build).
+    if (widget.clearInstallInput && !oldWidget.clearInstallInput) {
+      _controller.clear();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onCleared();
+      });
+    }
+  }
+
+  // A bare `~` or `~/...` prefix never resolves against the process CWD
+  // the way users expect (and the app's CWD is the install dir, not a
+  // home). Expand it to the home dir before handing off. `~user/...`
+  // (other users' homes) is left alone — unsupported on Windows anyway.
+  static String _expandTilde(String source) {
+    if (source != '~' && !source.startsWith('~/')) return source;
+    final home =
+        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+    if (home == null || home.isEmpty) return source;
+    return '$home${source.substring(1)}';
+  }
+
+  void _submit() {
+    final text = _expandTilde(_controller.text.trim());
+    if (text.isEmpty || widget.busy) return;
+    widget.onInstall(text);
+    // No optimistic clear here: the parent flips `clearInstallInput` after
+    // a successful install, and `didUpdateWidget` clears then — so a
+    // failed source stays in the field for typo-fixing.
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _controller,
+              onSubmitted: (_) => _submit(),
+              decoration: const InputDecoration(
+                hintText: 'Install by source: npm:pkg, git URL, local path…',
+              ),
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          const SizedBox(width: 6),
+          widget.busy
+              ? const SizedBox(
+                  width: 15,
+                  height: 15,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : IconButton(
+                  tooltip: 'Install',
+                  onPressed: _controller.text.trim().isEmpty ? null : _submit,
+                  icon: const Icon(Icons.add, size: 18),
+                ),
         ],
       ),
     );
@@ -1368,13 +2647,9 @@ class _Pick extends StatelessWidget {
   String _label(String value) => labelFor?.call(value) ?? value;
 
   Widget _item(String text) => ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 230),
-        child: Text(
-          text,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-      );
+    constraints: const BoxConstraints(maxWidth: 230),
+    child: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -1399,8 +2674,9 @@ class _Pick extends StatelessWidget {
         isDense: true,
         dropdownColor: theme.colorScheme.surfaceContainerHigh,
         underline: const SizedBox.shrink(),
-        style: theme.textTheme.bodySmall
-            ?.copyWith(color: theme.colorScheme.onSurface),
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurface,
+        ),
       ),
     );
   }
@@ -1437,8 +2713,9 @@ class _Entry extends StatefulWidget {
 }
 
 class _EntryState extends State<_Entry> {
-  late final TextEditingController _controller =
-      TextEditingController(text: widget.value);
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.value,
+  );
   final _focus = FocusNode();
   var _revealed = false;
 
@@ -1492,9 +2769,7 @@ class _EntryState extends State<_Entry> {
                 tooltip: _revealed ? 'Hide' : 'Reveal',
                 iconSize: 15,
                 onPressed: () => setState(() => _revealed = !_revealed),
-                icon: Icon(
-                  _revealed ? Icons.visibility_off : Icons.visibility,
-                ),
+                icon: Icon(_revealed ? Icons.visibility_off : Icons.visibility),
               )
             : null,
       ),
@@ -1526,8 +2801,9 @@ class _Number extends StatefulWidget {
 }
 
 class _NumberState extends State<_Number> {
-  late final TextEditingController _controller =
-      TextEditingController(text: _format(widget.value));
+  late final TextEditingController _controller = TextEditingController(
+    text: _format(widget.value),
+  );
   final _focus = FocusNode();
 
   static String _format(num? value) {
@@ -1671,8 +2947,9 @@ class _ListState extends State<_List> {
                         value,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.labelSmall
-                            ?.copyWith(fontFamily: 'GeistMono'),
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          fontFamily: 'GeistMono',
+                        ),
                       ),
                     ),
                     IconButton(
@@ -1737,13 +3014,14 @@ class _ChipState extends State<_Chip> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final selected = widget.selected;
-    final colour =
-        widget.emphasise ? theme.colorScheme.secondary : theme.colorScheme.primary;
+    final colour = widget.emphasise
+        ? theme.colorScheme.secondary
+        : theme.colorScheme.primary;
     final border = selected
         ? colour.withValues(alpha: 0.7)
         : (_hovered
-            ? theme.colorScheme.outline.withValues(alpha: 0.55)
-            : theme.dividerColor);
+              ? theme.colorScheme.outline.withValues(alpha: 0.55)
+              : theme.dividerColor);
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hovered = true),
@@ -1758,8 +3036,9 @@ class _ChipState extends State<_Chip> {
           decoration: BoxDecoration(
             color: selected
                 ? colour.withValues(alpha: 0.16)
-                : theme.colorScheme.surfaceContainerHigh
-                    .withValues(alpha: _hovered ? 0.9 : 0.55),
+                : theme.colorScheme.surfaceContainerHigh.withValues(
+                    alpha: _hovered ? 0.9 : 0.55,
+                  ),
             borderRadius: BorderRadius.circular(7),
             border: Border.all(color: border),
           ),
@@ -1852,8 +3131,9 @@ class _AddProviderFieldState extends State<_AddProviderField> {
             padding: const EdgeInsets.only(top: 4),
             child: Text(
               _error,
-              style: theme.textTheme.labelSmall
-                  ?.copyWith(color: theme.colorScheme.error),
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
             ),
           ),
       ],
@@ -1962,9 +3242,9 @@ class _ProviderEditorState extends State<_ProviderEditor> {
       _discoveryFailed = false;
       _discoveryMessage = added == 0
           ? 'Found ${result.ids.length} models at ${result.endpoint} - all '
-              'already listed.'
+                'already listed.'
           : 'Added $added of ${result.ids.length} models from '
-              '${result.endpoint}.';
+                '${result.endpoint}.';
     });
   }
 
@@ -1979,7 +3259,8 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     final headers = <String, String>{};
     if (rawHeaders is Map) {
       for (final entry in rawHeaders.entries) {
-        if (entry.value is String) headers['${entry.key}'] = entry.value as String;
+        if (entry.value is String)
+          headers['${entry.key}'] = entry.value as String;
       }
     }
 
@@ -1987,7 +3268,8 @@ class _ProviderEditorState extends State<_ProviderEditor> {
 
     return _Card(
       title: widget.id,
-      description: provider['name'] is String &&
+      description:
+          provider['name'] is String &&
               (provider['name'] as String).trim().isNotEmpty
           ? provider['name'] as String
           : null,
@@ -1999,7 +3281,8 @@ class _ProviderEditorState extends State<_ProviderEditor> {
           ),
         _Row(
           label: 'Provider id',
-          hint: 'Key under providers in models.json. Changing it here renames '
+          hint:
+              'Key under providers in models.json. Changing it here renames '
               'the entry.',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
@@ -2014,8 +3297,9 @@ class _ProviderEditorState extends State<_ProviderEditor> {
                   padding: const EdgeInsets.only(top: 3),
                   child: Text(
                     _idError,
-                    style: theme.textTheme.labelSmall
-                        ?.copyWith(color: theme.colorScheme.error),
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.error,
+                    ),
                   ),
                 ),
             ],
@@ -2042,14 +3326,16 @@ class _ProviderEditorState extends State<_ProviderEditor> {
         ),
         _Row(
           label: 'API key',
-          hint: r'A literal key, $ENV_VAR, or ${ENV_VAR}. Empty means pi uses '
+          hint:
+              r'A literal key, $ENV_VAR, or ${ENV_VAR}. Empty means pi uses '
               r'/login.',
           child: _Entry(
             value: apiKey,
             hint: r'$MY_API_KEY',
             // References are not secret and must stay readable; only literals
             // are worth hiding.
-            obscure: apiKey.isNotEmpty &&
+            obscure:
+                apiKey.isNotEmpty &&
                 !apiKey.startsWith(r'$') &&
                 !apiKey.startsWith('!'),
             onChanged: (v) => _store.setProviderField(widget.id, 'apiKey', v),
@@ -2268,10 +3554,8 @@ class _ModelEditor extends StatelessWidget {
               _Chip(
                 label: 'reasoning',
                 selected: model['reasoning'] == true,
-                onTap: () => _set(
-                  'reasoning',
-                  model['reasoning'] == true ? null : true,
-                ),
+                onTap: () =>
+                    _set('reasoning', model['reasoning'] == true ? null : true),
               ),
               const SizedBox(width: 6),
               _Chip(
@@ -2513,8 +3797,9 @@ class _Warning extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colour =
-        error ? theme.colorScheme.error : theme.colorScheme.secondary;
+    final colour = error
+        ? theme.colorScheme.error
+        : theme.colorScheme.secondary;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
@@ -2535,8 +3820,9 @@ class _Warning extends StatelessWidget {
           Expanded(
             child: Text(
               text,
-              style: theme.textTheme.labelSmall
-                  ?.copyWith(color: theme.colorScheme.onSurface),
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurface,
+              ),
             ),
           ),
         ],

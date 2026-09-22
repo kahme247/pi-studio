@@ -185,8 +185,15 @@ class SessionController extends ChangeNotifier {
       if (resumePath != null) {
         await client.switchSession(resumePath);
         sessionFile = resumePath;
-        await _loadHistory();
-        await _refreshState();
+        // Transcript and backend state are independent: fetch both at once
+        // and paint the transcript the moment it arrives, so the skeleton
+        // clears before the slower state/stats calls finish.
+        final messagesFuture = client.getMessages();
+        final stateFuture = client.getState();
+        _setHistory(await messagesFuture);
+        loading = false;
+        _notify();
+        _applyState(await stateFuture);
         status = 'Resumed';
       } else {
         items.clear();
@@ -211,6 +218,10 @@ class SessionController extends ChangeNotifier {
 
   Future<void> _refreshState() async {
     final response = await _client?.getState();
+    _applyState(response);
+  }
+
+  void _applyState(Map<String, dynamic>? response) {
     final data = response?['data'];
     if (data is Map) {
       sessionFile = data['sessionFile'] as String?;
@@ -376,6 +387,10 @@ class SessionController extends ChangeNotifier {
 
   Future<void> _loadHistory() async {
     final messages = await _client!.getMessages();
+    _setHistory(messages);
+  }
+
+  void _setHistory(List<dynamic> messages) {
     _history = messages
         .whereType<Map>()
         .map((message) => Map<String, dynamic>.from(message))
