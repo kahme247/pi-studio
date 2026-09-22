@@ -30,11 +30,11 @@ jobs:
     name: Windows x64
     runs-on: windows-latest
     steps:
-      # Pinned: checkout v4.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # Pinned: checkout v7.0.1.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      # Pinned: setup-node v4.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      # Pinned: setup-node v7.0.0.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -117,8 +117,8 @@ jobs:
             Write-Host "  $($_.Name)  $($_.Length) bytes"
           }
 
-      # Pinned: upload-artifact v4.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      # Pinned: upload-artifact v7.0.1.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: windows
           path: dist/*
@@ -128,8 +128,8 @@ jobs:
     name: Linux x64
     runs-on: ubuntu-latest
     steps:
-      # Pinned: checkout v4.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # Pinned: checkout v7.0.1.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install GTK build dependencies
         run: |
@@ -150,9 +150,9 @@ jobs:
       # Windows, and a platform-specific failure should not block a release.
       - run: flutter analyze
 
-      # Pinned: setup-node v4.
+      # Pinned: setup-node v7.0.0.
       - name: Install pinned node for the bundled pi runtime
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -183,8 +183,8 @@ jobs:
             -C build/linux/x64/release/bundle .
           ls -la dist
 
-      # Pinned: upload-artifact v4.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      # Pinned: upload-artifact v7.0.1.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: linux
           path: dist/*
