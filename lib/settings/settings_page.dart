@@ -8,9 +8,11 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../pi/session_store.dart';
 import 'model_discovery.dart';
+import 'json_file_store.dart';
 import 'pi_models.dart';
 import 'pi_packages.dart';
 import 'pi_settings.dart';
+import '../ui/smooth_scroll.dart';
 
 /// Reduced-motion-aware duration, matching the rest of the app.
 Duration _ms(BuildContext context, [int ms = 140]) =>
@@ -95,9 +97,21 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   var _section = SettingsSection.agent;
+  Future<void> _toggleSaves = Future<void>.value();
+  late final _scroll = SmoothScrollController(
+    wheelDuration: () => MediaQuery.maybeOf(context)?.disableAnimations == true
+        ? Duration.zero
+        : const Duration(milliseconds: 160),
+  );
 
   PiSettings get _s => widget.settings;
   PiModels get _m => widget.models;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   /// The page has one Save button, so it covers both files.
   bool get _dirty => _s.dirty || _m.dirty;
@@ -126,6 +140,32 @@ class _SettingsPageState extends State<SettingsPage> {
         duration: const Duration(seconds: 4),
       ),
     );
+  }
+
+  void _toggleSetting(String key, bool value) {
+    _s.write(key, value);
+    _saveToggle(_s);
+  }
+
+  void _toggleProvider(String id, bool value) {
+    _m.setProviderField(id, 'authHeader', value ? true : null);
+    _saveToggle(_m);
+  }
+
+  void _saveToggle(JsonFileStore store) {
+    _toggleSaves = _toggleSaves.then((_) => store.save()).then((_) {
+      if (!mounted || store.error == null) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not auto-save: ${store.error}')),
+      );
+    });
+  }
+
+  void _selectSection(SettingsSection section) {
+    setState(() => _section = section);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) _scroll.jumpTo(0);
+    });
   }
 
   Future<void> _discard() async {
@@ -223,18 +263,56 @@ class _SettingsPageState extends State<SettingsPage> {
   // ---------------------------------------------------------------- nav rail
 
   Widget _navRail(ThemeData theme) {
+    const groups = <({String label, List<SettingsSection> sections})>[
+      (
+        label: 'PI RUNTIME',
+        sections: [
+          SettingsSection.agent,
+          SettingsSection.providers,
+          SettingsSection.tools,
+          SettingsSection.compaction,
+          SettingsSection.sessions,
+          SettingsSection.retry,
+          SettingsSection.delivery,
+        ],
+      ),
+      (
+        label: 'STUDIO',
+        sections: [
+          SettingsSection.display,
+          SettingsSection.resources,
+          SettingsSection.network,
+          SettingsSection.about,
+        ],
+      ),
+    ];
     return Container(
-      width: 210,
+      width: 220,
       color: theme.colorScheme.surfaceContainerLowest,
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+      padding: const EdgeInsets.fromLTRB(10, 14, 10, 10),
       child: ListView(
         children: [
-          for (final section in SettingsSection.values)
-            _NavTile(
-              section: section,
-              selected: section == _section,
-              onTap: () => setState(() => _section = section),
+          for (final group in groups) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 10, 8, 7),
+              child: Text(
+                group.label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.hintColor,
+                  fontSize: 10,
+                  letterSpacing: 0.8,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
+            for (final section in group.sections)
+              _NavTile(
+                section: section,
+                selected: section == _section,
+                onTap: () => _selectSection(section),
+              ),
+            const SizedBox(height: 8),
+          ],
         ],
       ),
     );
@@ -259,10 +337,84 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       child: KeyedSubtree(
         key: ValueKey(_section),
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(24, 18, 24, 40),
-          children: _sectionBody(theme),
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 900),
+            child: Scrollbar(
+              controller: _scroll,
+              child: ListView(
+                controller: _scroll,
+                padding: const EdgeInsets.fromLTRB(30, 26, 30, 48),
+                children: [_sectionHeading(theme), ..._sectionBody(theme)],
+              ),
+            ),
+          ),
         ),
+      ),
+    );
+  }
+
+  Widget _sectionHeading(ThemeData theme) {
+    const descriptions = {
+      SettingsSection.agent: 'Choose the default model and reasoning behavior.',
+      SettingsSection.providers:
+          'Connect providers and configure model catalogs.',
+      SettingsSection.tools: 'Control which tools pi can use.',
+      SettingsSection.compaction:
+          'Configure how long conversations are managed.',
+      SettingsSection.sessions: 'Set session storage and retention behavior.',
+      SettingsSection.retry: 'Tune retries for temporary provider failures.',
+      SettingsSection.delivery: 'Choose how responses are delivered.',
+      SettingsSection.display: 'Adjust the transcript and interface.',
+      SettingsSection.resources: 'Manage packages, extensions, and skills.',
+      SettingsSection.network: 'Configure network and proxy behavior.',
+      SettingsSection.about: 'Version and runtime information.',
+    };
+    final section = _section;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 22),
+      child: Row(
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(
+                color: theme.colorScheme.primary.withValues(alpha: 0.18),
+              ),
+            ),
+            child: Icon(
+              section.icon,
+              size: 18,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  section.label,
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -0.35,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  descriptions[section]!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.hintColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -360,7 +512,7 @@ class _SettingsPageState extends State<SettingsPage> {
             hint: 'Collapse the model’s reasoning in the transcript',
             child: _Toggle(
               value: _s.readBool('hideThinkingBlock'),
-              onChanged: (v) => _s.write('hideThinkingBlock', v),
+              onChanged: (v) => _toggleSetting('hideThinkingBlock', v),
             ),
           ),
           _Row(
@@ -368,7 +520,7 @@ class _SettingsPageState extends State<SettingsPage> {
             hint: 'Transcript notes for prompt-cache misses and compaction',
             child: _Toggle(
               value: _s.readBool('showCacheMissNotices'),
-              onChanged: (v) => _s.write('showCacheMissNotices', v),
+              onChanged: (v) => _toggleSetting('showCacheMissNotices', v),
             ),
           ),
         ],
@@ -448,6 +600,7 @@ class _SettingsPageState extends State<SettingsPage> {
           store: _m,
           id: id,
           models: _m.modelsOf(id),
+          onAuthHeaderChanged: (value) => _toggleProvider(id, value),
         ),
       _Card(
         title: 'How this file fits together',
@@ -539,7 +692,7 @@ class _SettingsPageState extends State<SettingsPage> {
             label: 'Enabled',
             child: _Toggle(
               value: _s.readBool('compaction.enabled', fallback: true),
-              onChanged: (v) => _s.write('compaction.enabled', v),
+              onChanged: (v) => _toggleSetting('compaction.enabled', v),
             ),
           ),
           _Row(
@@ -578,7 +731,7 @@ class _SettingsPageState extends State<SettingsPage> {
             hint: 'Navigating back through history summarises without asking',
             child: _Toggle(
               value: _s.readBool('branchSummary.skipPrompt'),
-              onChanged: (v) => _s.write('branchSummary.skipPrompt', v),
+              onChanged: (v) => _toggleSetting('branchSummary.skipPrompt', v),
             ),
           ),
         ],
@@ -636,7 +789,7 @@ class _SettingsPageState extends State<SettingsPage> {
             label: 'Enabled',
             child: _Toggle(
               value: _s.readBool('retry.enabled', fallback: true),
-              onChanged: (v) => _s.write('retry.enabled', v),
+              onChanged: (v) => _toggleSetting('retry.enabled', v),
             ),
           ),
           _Row(
@@ -780,7 +933,7 @@ class _SettingsPageState extends State<SettingsPage> {
             hint: 'Hide the startup header in the CLI',
             child: _Toggle(
               value: _s.readBool('quietStartup'),
-              onChanged: (v) => _s.write('quietStartup', v),
+              onChanged: (v) => _toggleSetting('quietStartup', v),
             ),
           ),
           _Row(
@@ -788,7 +941,7 @@ class _SettingsPageState extends State<SettingsPage> {
             hint: 'Condensed changelog after an update',
             child: _Toggle(
               value: _s.readBool('collapseChangelog'),
-              onChanged: (v) => _s.write('collapseChangelog', v),
+              onChanged: (v) => _toggleSetting('collapseChangelog', v),
             ),
           ),
         ],
@@ -910,7 +1063,7 @@ class _SettingsPageState extends State<SettingsPage> {
             label: 'Register skills as /skill:name',
             child: _Toggle(
               value: _s.readBool('enableSkillCommands', fallback: true),
-              onChanged: (v) => _s.write('enableSkillCommands', v),
+              onChanged: (v) => _toggleSetting('enableSkillCommands', v),
             ),
           ),
         ],
@@ -945,7 +1098,7 @@ class _SettingsPageState extends State<SettingsPage> {
             hint: 'Anonymous install ping and provider attribution headers',
             child: _Toggle(
               value: _s.readBool('enableInstallTelemetry', fallback: true),
-              onChanged: (v) => _s.write('enableInstallTelemetry', v),
+              onChanged: (v) => _toggleSetting('enableInstallTelemetry', v),
             ),
           ),
           _Row(
@@ -953,7 +1106,7 @@ class _SettingsPageState extends State<SettingsPage> {
             hint: 'Opt-in usage data sharing',
             child: _Toggle(
               value: _s.readBool('enableAnalytics'),
-              onChanged: (v) => _s.write('enableAnalytics', v),
+              onChanged: (v) => _toggleSetting('enableAnalytics', v),
             ),
           ),
         ],
@@ -2672,7 +2825,10 @@ class _Pick extends StatelessWidget {
         items: items,
         onChanged: onChanged,
         isDense: true,
-        dropdownColor: theme.colorScheme.surfaceContainerHigh,
+        dropdownColor: theme.colorScheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(8),
+        elevation: 8,
+        icon: const Icon(Icons.expand_more, size: 18),
         underline: const SizedBox.shrink(),
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onSurface,
@@ -3147,18 +3303,21 @@ class _ProviderEditor extends StatefulWidget {
     required this.store,
     required this.id,
     required this.models,
+    required this.onAuthHeaderChanged,
     super.key,
   });
 
   final PiModels store;
   final String id;
   final List<Object?> models;
+  final ValueChanged<bool> onAuthHeaderChanged;
 
   @override
   State<_ProviderEditor> createState() => _ProviderEditorState();
 }
 
 class _ProviderEditorState extends State<_ProviderEditor> {
+  var _expanded = false;
   var _discovering = false;
   String? _discoveryMessage;
   var _discoveryFailed = false;
@@ -3267,126 +3426,254 @@ class _ProviderEditorState extends State<_ProviderEditor> {
 
     final apiKey = (provider['apiKey'] as String?) ?? '';
 
-    return _Card(
-      title: widget.id,
-      description:
-          provider['name'] is String &&
-              (provider['name'] as String).trim().isNotEmpty
-          ? provider['name'] as String
-          : null,
-      children: [
-        for (final problem in problems)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6),
-            child: _Warning(text: problem),
-          ),
-        _Row(
-          label: 'Provider id',
-          hint:
-              'Key under providers in models.json. Changing it here renames '
-              'the entry.',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              _Entry(
-                value: widget.id,
-                commitOnBlur: true,
-                onChanged: _renameTo,
-              ),
-              if (_idError.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 3),
-                  child: Text(
-                    _idError,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
+    final displayName =
+        provider['name'] is String &&
+            (provider['name'] as String).trim().isNotEmpty
+        ? (provider['name'] as String).trim()
+        : widget.id;
+    final baseUrl = (provider['baseUrl'] as String?)?.trim() ?? '';
+    final api = provider['api'] as String?;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Container(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: theme.dividerColor),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => setState(() => _expanded = !_expanded),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 13, 14, 13),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primary.withValues(
+                            alpha: 0.1,
+                          ),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          Icons.hub_outlined,
+                          size: 17,
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    displayName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: theme.textTheme.bodyMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                if (displayName != widget.id) ...[
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    widget.id,
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      fontFamily: 'GeistMono',
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              baseUrl.isEmpty
+                                  ? 'No base URL configured'
+                                  : baseUrl,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                fontFamily: 'GeistMono',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      if (api != null && api.isNotEmpty)
+                        _ProviderBadge(label: api),
+                      const SizedBox(width: 8),
+                      _ProviderBadge(
+                        label: '${widget.models.length} models',
+                        highlighted: widget.models.isNotEmpty,
+                      ),
+                      const SizedBox(width: 8),
+                      AnimatedRotation(
+                        turns: _expanded ? 0.5 : 0,
+                        duration: _ms(context, 140),
+                        child: Icon(
+                          Icons.expand_more,
+                          size: 19,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-            ],
-          ),
-        ),
-        _Row(
-          label: 'Base URL',
-          hint: 'Where requests go, e.g. http://localhost:11434/v1',
-          child: _Entry(
-            value: (provider['baseUrl'] as String?) ?? '',
-            hint: 'https://...',
-            onChanged: (v) => _store.setProviderField(widget.id, 'baseUrl', v),
-          ),
-        ),
-        _Row(
-          label: 'API',
-          hint: 'Which streaming shape this provider speaks',
-          child: _Pick(
-            value: provider['api'] as String?,
-            unsetLabel: '(not set)',
-            options: piModelApis,
-            onChanged: (v) => _store.setProviderField(widget.id, 'api', v),
-          ),
-        ),
-        _Row(
-          label: 'API key',
-          hint:
-              r'A literal key, $ENV_VAR, or ${ENV_VAR}. Empty means pi uses '
-              r'/login.',
-          child: _Entry(
-            value: apiKey,
-            hint: r'$MY_API_KEY',
-            // References are not secret and must stay readable; only literals
-            // are worth hiding.
-            obscure:
-                apiKey.isNotEmpty &&
-                !apiKey.startsWith(r'$') &&
-                !apiKey.startsWith('!'),
-            onChanged: (v) => _store.setProviderField(widget.id, 'apiKey', v),
-          ),
-        ),
-        _Row(
-          label: 'Send Authorization: Bearer',
-          hint: 'For endpoints that take the key as a bearer header',
-          child: _Toggle(
-            value: provider['authHeader'] == true,
-            onChanged: (v) => _store.setProviderField(
-              widget.id,
-              'authHeader',
-              v ? true : null,
+              ),
             ),
-          ),
+            AnimatedSize(
+              duration: _ms(context, 180),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              child: _expanded
+                  ? Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Divider(height: 1, color: theme.dividerColor),
+                          const SizedBox(height: 8),
+                          ..._providerFields(
+                            theme,
+                            provider,
+                            problems,
+                            apiKey,
+                            headers,
+                            duplicated,
+                          ),
+                        ],
+                      ),
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
+          ],
         ),
-        _Row(
-          label: 'Display name',
-          hint: 'Shown where pi has room for a friendly name',
-          child: _Entry(
-            value: (provider['name'] as String?) ?? '',
-            hint: widget.id,
-            onChanged: (v) => _store.setProviderField(widget.id, 'name', v),
-          ),
-        ),
-        _KeyValueEditor(
-          label: 'Headers',
-          hint: 'Same value syntax as the API key',
-          values: headers,
-          onChanged: (next) => _store.setProviderField(
-            widget.id,
-            'headers',
-            next.isEmpty ? null : next,
-          ),
-        ),
-        const Divider(height: 24),
-        ..._modelsSection(theme, duplicated),
-        const SizedBox(height: 6),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            onPressed: () => _store.removeProvider(widget.id),
-            icon: const Icon(Icons.delete_outline, size: 15),
-            label: Text('Remove ${widget.id}'),
-          ),
-        ),
-      ],
+      ),
     );
   }
+
+  List<Widget> _providerFields(
+    ThemeData theme,
+    Map<String, dynamic> provider,
+    List<String> problems,
+    String apiKey,
+    Map<String, String> headers,
+    Set<String> duplicated,
+  ) => [
+    for (final problem in problems)
+      Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: _Warning(text: problem),
+      ),
+    _Row(
+      label: 'Provider id',
+      hint:
+          'Key under providers in models.json. Changing it here renames '
+          'the entry.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          _Entry(value: widget.id, commitOnBlur: true, onChanged: _renameTo),
+          if (_idError.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                _idError,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ),
+        ],
+      ),
+    ),
+    _Row(
+      label: 'Base URL',
+      hint: 'Where requests go, e.g. http://localhost:11434/v1',
+      child: _Entry(
+        value: (provider['baseUrl'] as String?) ?? '',
+        hint: 'https://...',
+        onChanged: (v) => _store.setProviderField(widget.id, 'baseUrl', v),
+      ),
+    ),
+    _Row(
+      label: 'API',
+      hint: 'Which streaming shape this provider speaks',
+      child: _Pick(
+        value: provider['api'] as String?,
+        unsetLabel: '(not set)',
+        options: piModelApis,
+        onChanged: (v) => _store.setProviderField(widget.id, 'api', v),
+      ),
+    ),
+    _Row(
+      label: 'API key',
+      hint:
+          r'A literal key, $ENV_VAR, or ${ENV_VAR}. Empty means pi uses '
+          r'/login.',
+      child: _Entry(
+        value: apiKey,
+        hint: r'$MY_API_KEY',
+        // References are not secret and must stay readable; only literals
+        // are worth hiding.
+        obscure:
+            apiKey.isNotEmpty &&
+            !apiKey.startsWith(r'$') &&
+            !apiKey.startsWith('!'),
+        onChanged: (v) => _store.setProviderField(widget.id, 'apiKey', v),
+      ),
+    ),
+    _Row(
+      label: 'Send Authorization: Bearer',
+      hint: 'For endpoints that take the key as a bearer header',
+      child: _Toggle(
+        value: provider['authHeader'] == true,
+        onChanged: widget.onAuthHeaderChanged,
+      ),
+    ),
+    _Row(
+      label: 'Display name',
+      hint: 'Shown where pi has room for a friendly name',
+      child: _Entry(
+        value: (provider['name'] as String?) ?? '',
+        hint: widget.id,
+        onChanged: (v) => _store.setProviderField(widget.id, 'name', v),
+      ),
+    ),
+    _KeyValueEditor(
+      label: 'Headers',
+      hint: 'Same value syntax as the API key',
+      values: headers,
+      onChanged: (next) => _store.setProviderField(
+        widget.id,
+        'headers',
+        next.isEmpty ? null : next,
+      ),
+    ),
+    const Divider(height: 24),
+    ..._modelsSection(theme, duplicated),
+    const SizedBox(height: 6),
+    Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        onPressed: () => _store.removeProvider(widget.id),
+        icon: const Icon(Icons.delete_outline, size: 15),
+        label: Text('Remove ${widget.id}'),
+      ),
+    ),
+  ];
 
   List<Widget> _modelsSection(ThemeData theme, Set<String> duplicated) {
     final models = widget.models;
@@ -3445,6 +3732,45 @@ class _ProviderEditorState extends State<_ProviderEditor> {
             duplicate: duplicated.contains((models[i] as Map)['id']),
           ),
     ];
+  }
+}
+
+class _ProviderBadge extends StatelessWidget {
+  const _ProviderBadge({required this.label, this.highlighted = false});
+
+  final String label;
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = highlighted
+        ? theme.colorScheme.primary
+        : theme.colorScheme.onSurfaceVariant;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 150),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+      decoration: BoxDecoration(
+        color: highlighted
+            ? theme.colorScheme.primary.withValues(alpha: 0.1)
+            : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: highlighted
+              ? theme.colorScheme.primary.withValues(alpha: 0.2)
+              : theme.dividerColor,
+        ),
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: color,
+          fontSize: 10.5,
+        ),
+      ),
+    );
   }
 }
 

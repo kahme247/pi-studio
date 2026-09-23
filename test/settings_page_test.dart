@@ -19,8 +19,11 @@ import 'package:pi_studio/settings/settings_page.dart';
 /// zone where real dart:io futures never complete. Disk round-trips are covered
 /// by pi_settings_test.dart using plain `test()`.
 void main() {
-  testWidgets('renders every section and binds edits to the store',
-      (tester) async {
+  testWidgets('renders every section and binds edits to the store', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 1200);
+    tester.view.devicePixelRatio = 1;
     const models = <({String provider, String id, String label})>[
       (
         provider: 'cliproxyapi',
@@ -127,17 +130,27 @@ void main() {
         reason: 'section ${section.label} threw while building',
       );
       expect(find.text(section.label).first, findsOneWidget);
+      if (section == SettingsSection.providers) {
+        expect(find.text('API key'), findsNothing);
+        await tester.tap(find.text('local-llm'));
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(find.text('API key'), findsOneWidget);
+        tester.widget<Switch>(find.byType(Switch).first).onChanged!(true);
+        await tester.pump();
+        expect(modelsConfig.provider('local-llm')?['authHeader'], isTrue);
+        expect(modelsConfig.dirty, isFalse);
+      }
     }
 
     // About is last; come back to Agent for the edit checks.
     await tester.tap(find.text('Agent').first);
     await tester.pump(const Duration(milliseconds: 250));
 
-    // A toggle binds straight through to the store.
-    await tester.tap(find.byType(Switch).first);
+    // A toggle persists immediately instead of waiting for the page Save.
+    tester.widget<Switch>(find.byType(Switch).first).onChanged!(true);
     await tester.pump();
     expect(settings.readBool('hideThinkingBlock'), isTrue);
-    expect(settings.dirty, isTrue);
+    expect(settings.dirty, isFalse);
 
     // Typing commits per keystroke. Save is disabled while nothing is dirty and
     // a disabled button cannot take focus, so a blur-to-commit field would

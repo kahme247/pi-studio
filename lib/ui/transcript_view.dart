@@ -199,7 +199,7 @@ class _ChatItemViewState extends State<ChatItemView> {
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(color: theme.dividerColor),
                   ),
-                  child: SelectableText(item.text),
+                  child: Text(item.text),
                 ),
               ),
               if (item.time != null)
@@ -242,7 +242,7 @@ class _ChatItemViewState extends State<ChatItemView> {
         // fallback for a stray block-less thinking item.
         return Padding(
           padding: const EdgeInsets.only(bottom: 10),
-          child: SelectableText(
+          child: Text(
             item.text,
             style: theme.textTheme.bodySmall?.copyWith(color: theme.hintColor),
           ),
@@ -358,7 +358,9 @@ class _AssistantMessageViewState extends State<AssistantMessageView> {
           children: [
             MarkdownBody(
               data: widget.item.text,
-              selectable: true,
+              // Selection comes from the SelectionArea around the whole
+              // transcript, so cross-message drag-select and Ctrl+C work.
+              selectable: false,
               styleSheet: _markdownStyleSheet(theme),
             ),
             // A caret under the growing text: without it a slow turn looks
@@ -780,7 +782,7 @@ class _StepRowState extends State<_StepRow> {
           Padding(
             padding: const EdgeInsets.only(left: 22, top: 2, bottom: 8),
             child: item.kind == ItemKind.thinking
-                ? SelectableText(
+                ? Text(
                     detail,
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.hintColor,

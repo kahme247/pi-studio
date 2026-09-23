@@ -591,9 +591,15 @@ class _SessionFileRow extends StatelessWidget {
 
 /// Circular send button, like the arrow in the reference composer.
 class SendButton extends StatefulWidget {
-  const SendButton({super.key, required this.enabled, required this.onTap});
+  const SendButton({
+    super.key,
+    required this.enabled,
+    required this.streaming,
+    required this.onTap,
+  });
 
   final bool enabled;
+  final bool streaming;
   final VoidCallback onTap;
 
   @override
@@ -652,13 +658,26 @@ class _SendButtonState extends State<SendButton> {
               child: SizedBox(
                 width: 36,
                 height: 36,
-                child: Icon(
-                  Icons.arrow_upward,
-                  size: 18,
-                  color: enabled
-                      ? theme.colorScheme.onPrimary
-                      : theme.hintColor,
-                ),
+                child: widget.streaming
+                    ? Center(
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: enabled
+                                ? theme.colorScheme.onPrimary
+                                : theme.hintColor,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      )
+                    : Icon(
+                        Icons.arrow_upward,
+                        size: 18,
+                        color: enabled
+                            ? theme.colorScheme.onPrimary
+                            : theme.hintColor,
+                      ),
               ),
             ),
           ),

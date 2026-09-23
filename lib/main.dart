@@ -413,6 +413,16 @@ class _HomePageState extends State<HomePage> {
     _scrollToEnd(force: true);
   }
 
+  Future<void> _openProject(String projectDir) async {
+    for (final session in _sessions.reversed) {
+      if (_sameProject(session.projectDir, projectDir)) {
+        _select(session);
+        return;
+      }
+    }
+    await _openSession(projectDir);
+  }
+
   Future<void> _openWorktreeSession(String projectDir) async {
     try {
       final worktree = await createWorktree(projectDir);
@@ -1407,7 +1417,53 @@ class _HomePageState extends State<HomePage> {
           Expanded(
             child: ListView(
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
-              children: _sessionList(context),
+              children: [
+                ..._sessionList(context),
+                _sectionHeader(context, 'Projects', onAdd: _addProject),
+                for (final project in _allProjects())
+                  Tooltip(
+                    message: project,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 1),
+                      child: HoverTint(
+                        radius: 8,
+                        onTap: () => _openProject(project),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.folder_outlined,
+                                size: 15,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _folderName(project),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodySmall,
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: () => _openSession(project),
+                                icon: const Icon(Icons.add, size: 15),
+                                tooltip: 'New task in ${_folderName(project)}',
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                  minWidth: 26,
+                                  minHeight: 26,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
           const Divider(height: 1),
@@ -1602,11 +1658,26 @@ class _HomePageState extends State<HomePage> {
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  session.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      session.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurface,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    Text(
+                      _folderName(session.projectDir),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall,
+                    ),
+                  ],
                 ),
               ),
               if (session.streaming)
@@ -1666,12 +1737,6 @@ class _HomePageState extends State<HomePage> {
                 ),
                 tooltip: 'Toggle panel',
               ),
-              if (session.streaming)
-                TextButton.icon(
-                  onPressed: session.abort,
-                  icon: const Icon(Icons.stop, size: 16),
-                  label: const Text('Stop'),
-                ),
             ],
           ),
         ),
@@ -1732,57 +1797,58 @@ class _HomePageState extends State<HomePage> {
                               }
                               return false;
                             },
-                            child: ListView.builder(
-                              controller: _scroll,
-                              // Newest first: offset zero is the bottom end,
-                              // so history prepends grow the far edge and the
-                              // viewport holds still with no compensation.
-                              reverse: true,
-                              // Was 50000px, which kept almost every row of
-                              // a long session built and laid out on every
-                              // scroll frame. Each markdown block is a
-                              // SelectableText — a live EditableText with
-                              // its own selection machinery — so hundreds
-                              // of them alive made the transcript advance in
-                              // visible jumps. A screen of slack above and
-                              // below is enough for smooth scroll-back, and
-                              // turn jumps correct themselves (see below).
-                              scrollCacheExtent: const ScrollCacheExtent.pixels(
-                                1200.0,
-                              ),
-                              padding: const EdgeInsets.fromLTRB(
-                                16,
-                                16,
-                                16,
-                                24,
-                              ),
-                              itemCount: latestFirst.length,
-                              itemBuilder: (context, index) {
-                                final row = latestFirst[index];
-                                if (row is List<ChatItem>) {
-                                  return ActivityBlockView(
-                                    items: row,
-                                    key: ValueKey(
-                                      'blk:${row.first.stableId ?? 'live-$index'}',
-                                    ),
-                                    live: session.streaming && index == 0,
-                                    seconds: session.processingSeconds,
-                                    tokensPerSecond: session.tokensPerSecond,
+                            // One SelectionArea for the whole transcript: drag-select
+                            // spans messages and Ctrl+C copies the lot. Plain
+                            // Text/MarkdownBody inside is enough — nested
+                            // selectables would each grab the gesture.
+                            child: SelectionArea(
+                              child: ListView.builder(
+                                controller: _scroll,
+                                // Newest first: offset zero is the bottom end,
+                                // so history prepends grow the far edge and the
+                                // viewport holds still with no compensation.
+                                reverse: true,
+                                // Was 50000px, which kept almost every row of
+                                // a long session built and laid out on every
+                                // scroll frame. A screen of slack above and
+                                // below is enough for smooth scroll-back, and
+                                // turn jumps correct themselves (see below).
+                                scrollCacheExtent:
+                                    const ScrollCacheExtent.pixels(1200.0),
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  16,
+                                  16,
+                                  24,
+                                ),
+                                itemCount: latestFirst.length,
+                                itemBuilder: (context, index) {
+                                  final row = latestFirst[index];
+                                  if (row is List<ChatItem>) {
+                                    return ActivityBlockView(
+                                      items: row,
+                                      key: ValueKey(
+                                        'blk:${row.first.stableId ?? 'live-$index'}',
+                                      ),
+                                      live: session.streaming && index == 0,
+                                      seconds: session.processingSeconds,
+                                      tokensPerSecond: session.tokensPerSecond,
+                                    );
+                                  }
+                                  final item = row as ChatItem;
+                                  final stableId = item.stableId;
+                                  return ChatItemView(
+                                    item,
+                                    key: stableId == null
+                                        ? null
+                                        : ValueKey(stableId),
+                                    live:
+                                        session.streaming &&
+                                        item.kind == ItemKind.assistant &&
+                                        index == 0,
                                   );
-                                }
-                                final item = row as ChatItem;
-                                final stableId = item.stableId;
-                                return ChatItemView(
-                                  item,
-                                  key: stableId == null
-                                      ? null
-                                      : ValueKey(stableId),
-                                  live:
-                                      session.streaming &&
-                                      item.kind == ItemKind.assistant &&
-                                      index == 0,
-                                );
-                              },
+                                },
+                              ),
                             ),
                           ),
                         ),
@@ -1871,15 +1937,25 @@ class _HomePageState extends State<HomePage> {
                               ContextRing(session: session),
                             AgentSettingsMenu(session: session),
                             const SizedBox(width: 8),
-                            SendButton(enabled: true, onTap: _send),
+                            SendButton(
+                              enabled: true,
+                              streaming: session.streaming,
+                              onTap: session.streaming ? session.abort : _send,
+                            ),
                           ],
                         ),
                       ],
                     ),
                   ),
                 ),
+                Divider(
+                  height: 12,
+                  indent: 10,
+                  endIndent: 10,
+                  color: theme.dividerColor.withValues(alpha: 0.7),
+                ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
                   child: Row(
                     children: [
                       _projectChip(context, session),
