@@ -1219,80 +1219,118 @@ class _HomePageState extends State<HomePage> {
               // native frame. Linux keeps its GTK header bar instead.
               if (Platform.isWindows) const TitleBar(),
               Expanded(
-                child: Row(
-                  children: [
-                    SizedBox(width: _sidebarWidth, child: _sidebar(context)),
-                    _splitter(
-                      color: _sidebarBackground(context),
-                      onDrag: (dx) => setState(
-                        () => _sidebarWidth = (_sidebarWidth + dx).clamp(
-                          240.0,
-                          480.0,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    const minChatWidth = 480.0;
+                    // Keep both splitters and the chat's usable width outside
+                    // the rail's budget; the 820px ceiling only applies on
+                    // wide windows.
+                    final maxRailWidth =
+                        (constraints.maxWidth -
+                                _sidebarWidth -
+                                16 -
+                                minChatWidth)
+                            .clamp(0.0, 820.0)
+                            .toDouble();
+                    final minRailWidth = maxRailWidth < 320
+                        ? maxRailWidth
+                        : 320.0;
+                    final railWidth = _railWidth
+                        .clamp(minRailWidth, maxRailWidth)
+                        .toDouble();
+                    return Row(
+                      children: [
+                        SizedBox(
+                          width: _sidebarWidth,
+                          child: _sidebar(context),
                         ),
-                      ),
-                      onReset: () => setState(() => _sidebarWidth = 264),
-                    ),
-                    Expanded(
-                      // Opaque shell: the scaffold is transparent on Windows
-                      // and only the sidebar may let the wallpaper through —
-                      // this covers both the hero and the transcript.
-                      child: Container(
-                        color: theme.colorScheme.surface,
-                        child: AnimatedSwitcher(
-                          duration: motion(context, 200),
-                          switchInCurve: Curves.easeOutCubic,
-                          switchOutCurve: Curves.easeIn,
-                          transitionBuilder: (child, animation) =>
-                              FadeTransition(
-                                opacity: animation,
-                                child: SlideTransition(
-                                  position: Tween<Offset>(
-                                    begin: const Offset(0, 0.012),
-                                    end: Offset.zero,
-                                  ).animate(animation),
-                                  child: child,
-                                ),
+                        _splitter(
+                          color: _sidebarBackground(context),
+                          onDrag: (dx) => setState(
+                            () => _sidebarWidth = (_sidebarWidth + dx).clamp(
+                              240.0,
+                              480.0,
+                            ),
+                          ),
+                          onReset: () => setState(() => _sidebarWidth = 264),
+                        ),
+                        Expanded(
+                          // Opaque shell: the scaffold is transparent on Windows
+                          // and only the sidebar may let the wallpaper through —
+                          // this covers both the hero and the transcript.
+                          child: Container(
+                            color: theme.colorScheme.surface,
+                            child: AnimatedSwitcher(
+                              duration: motion(context, 200),
+                              switchInCurve: Curves.easeOutCubic,
+                              switchOutCurve: Curves.easeIn,
+                              transitionBuilder: (child, animation) =>
+                                  FadeTransition(
+                                    opacity: animation,
+                                    child: SlideTransition(
+                                      position: Tween<Offset>(
+                                        begin: const Offset(0, 0.012),
+                                        end: Offset.zero,
+                                      ).animate(animation),
+                                      child: child,
+                                    ),
+                                  ),
+                              child: KeyedSubtree(
+                                key: ValueKey(_selected),
+                                child: _chatPane(context),
                               ),
-                          child: KeyedSubtree(
-                            key: ValueKey(_selected),
-                            child: _chatPane(context),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                    AnimatedSize(
-                      duration: motion(context, 220),
-                      curve: Curves.easeOutCubic,
-                      alignment: Alignment.centerRight,
-                      child: _showRail && session != null
-                          // Opaque shell around the animated row: without it
-                          // the wallpaper flashes through the rail's area for
-                          // a frame while AnimatedSize grows/shrinks.
-                          ? Container(
-                              color: theme.colorScheme.surfaceContainerLowest,
-                              child: Row(
-                                children: [
-                                  _splitter(
+                        ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: maxRailWidth + 8,
+                          ),
+                          child: AnimatedSize(
+                            duration: motion(context, 220),
+                            curve: Curves.easeOutCubic,
+                            alignment: Alignment.centerRight,
+                            child: _showRail && session != null
+                                ? Container(
                                     color: theme
                                         .colorScheme
                                         .surfaceContainerLowest,
-                                    onDrag: (dx) => setState(
-                                      () => _railWidth = (_railWidth - dx)
-                                          .clamp(320.0, 820.0),
+                                    child: Row(
+                                      children: [
+                                        _splitter(
+                                          color: theme
+                                              .colorScheme
+                                              .surfaceContainerLowest,
+                                          onDrag: (dx) => setState(
+                                            () => _railWidth = (railWidth - dx)
+                                                .clamp(
+                                                  minRailWidth,
+                                                  maxRailWidth,
+                                                )
+                                                .toDouble(),
+                                          ),
+                                          onReset: () => setState(
+                                            () => _railWidth = 520
+                                                .clamp(
+                                                  minRailWidth,
+                                                  maxRailWidth,
+                                                )
+                                                .toDouble(),
+                                          ),
+                                        ),
+                                        SizedBox(
+                                          width: railWidth,
+                                          child: _rail(context, session),
+                                        ),
+                                      ],
                                     ),
-                                    onReset: () =>
-                                        setState(() => _railWidth = 520),
-                                  ),
-                                  SizedBox(
-                                    width: _railWidth,
-                                    child: _rail(context, session),
-                                  ),
-                                ],
-                              ),
-                            )
-                          : const SizedBox.shrink(),
-                    ),
-                  ],
+                                  )
+                                : const SizedBox.shrink(),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ],

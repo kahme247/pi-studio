@@ -4,7 +4,7 @@
 #
 # Layout produced (next to pi_studio.exe / the linux bundle):
 #   pi_runtime/
-#     PI_VERSION            pinned pi version + source, for logs and debugging
+#     PI_VERSION            staged pi version + source, for logs and debugging
 #     package.json          required: anchors getPackageDir() asset resolution
 #     bin/node(.exe)        Node 22, copied from the runner's own toolchain
 #     dist/bundle/...       pi bundle (rpc-entry.js + chunks), from npm
@@ -14,6 +14,7 @@
 #       @earendil-works/chord/  hard static import (audited; smoke test
 #                               below fails the stage if a future pi adds one)
 #       jiti/                   lazy require for TS extension loading
+#       npm/                    offline runtime package updater
 #       @silvia-odwyer/photon-node/   image wasm; graceful fallback without it
 #
 # Inputs (env):
@@ -22,6 +23,7 @@
 #                      Default: the npm-global install next to `pi` on PATH.
 #   PI_STUDIO_NODE_EXE path to a node 22 binary. Default: `node` on PATH,
 #                      else the node bundled with a managed pi install.
+#   PI_STUDIO_NPM_DIR  npm package directory from the same Node distribution.
 #
 # Usage:
 #   flutter build windows --release
@@ -129,6 +131,12 @@ foreach ($dep in @('@earendil-works/chord', 'jiti')) {
   Copy-Tree $src "node_modules/$dep"
 }
 
+if (-not $env:PI_STUDIO_NPM_DIR -or
+    -not (Test-Path (Join-Path $env:PI_STUDIO_NPM_DIR 'bin/npm-cli.js'))) {
+  throw 'npm not found; set PI_STUDIO_NPM_DIR to the Node distribution npm directory'
+}
+Copy-Tree $env:PI_STUDIO_NPM_DIR 'node_modules/npm'
+
 $bin = Join-Path $dest 'bin'
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 Copy-Item $nodeExe (Join-Path $bin (Split-Path $nodeExe -Leaf)) -Force
@@ -143,10 +151,13 @@ $nodeBin = Join-Path $bin (Split-Path $nodeExe -Leaf)
 if ($LASTEXITCODE -ne 0) { throw 'staged runtime failed to boot' }
 & $nodeBin (Join-Path $dest 'dist/bundle/cli.js') --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'staged cli.js failed to boot' }
+& $nodeBin (Join-Path $dest 'node_modules/npm/bin/npm-cli.js') --version | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'staged npm failed to boot' }
 
 "$($pkg.name) $version staged $(Get-Date -Format o) from $piDir" |
   Set-Content (Join-Path $dest 'PI_VERSION')
 
 Write-Host "Staged:"
-Get-ChildItem $dest -Recurse -File |
-  ForEach-Object { Write-Host ("  {0}  {1:N1} MB" -f $_.FullName.Substring($dest.Length + 1), ($_.Length / 1MB)) }
+$files = Get-ChildItem $dest -Recurse -File
+$bytes = ($files | Measure-Object -Property Length -Sum).Sum
+Write-Host ("  {0} files, {1:N1} MB" -f $files.Count, ($bytes / 1MB))

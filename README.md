@@ -70,13 +70,16 @@ flutter build windows --release   # -> build\windows\x64\runner\Release\
 ```
 
 Release builds bundle the pi backend so users need no install: the release
-workflow installs the pinned `@earendil-works/pi-coding-agent` (`PI_VERSION`
-in `.github/workflows/release.yml`) plus Node 22, then runs
+workflow resolves npm's `latest` tag once and installs that same
+`@earendil-works/pi-coding-agent` version on each platform with Node 22, then runs
 `tool/stage_pi_runtime.ps1` (Windows) or `tool/stage_pi_runtime.sh` (Linux)
 to stage `pi_runtime/` (node binary + pi bundle) next to the app executable.
 The app prefers the bundled runtime and falls back to `pi` on PATH, so local
 dev builds keep working without staging anything. Override with the
 `PI_STUDIO_PI` env var (path to a `pi` executable) to test a different pi.
+In release builds, Settings → About can check for and install Pi runtime
+updates per user; new sessions use the update while existing sessions finish
+on their current runtime.
 
 Linux (requires clang, cmake, ninja, pkg-config, libgtk-3-dev):
 

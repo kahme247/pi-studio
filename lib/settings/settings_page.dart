@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../pi/session_store.dart';
+import '../pi/pi_runtime.dart';
 import 'model_discovery.dart';
 import 'json_file_store.dart';
 import 'pi_models.dart';
@@ -1249,6 +1250,14 @@ class _SettingsPageState extends State<SettingsPage> {
           ],
         ),
       _Card(
+        title: 'Pi runtime',
+        description:
+            'Update the bundled Pi runtime without reinstalling Pi Studio. '
+            'Updates apply to new sessions; sessions already running stay on '
+            'their current version.',
+        children: [_PiRuntimeCard()],
+      ),
+      _Card(
         title: 'Pi Studio',
         children: [
           const _InfoRow(label: 'Version', value: '1.0.0'),
@@ -1263,6 +1272,149 @@ class _SettingsPageState extends State<SettingsPage> {
 }
 
 // ---------------------------------------------------------------- nav tile
+
+class _PiRuntimeCard extends StatefulWidget {
+  @override
+  State<_PiRuntimeCard> createState() => _PiRuntimeCardState();
+}
+
+class _PiRuntimeCardState extends State<_PiRuntimeCard> {
+  String? _latest;
+  String? _installed;
+  String? _error;
+  String? _progress;
+  var _checking = false;
+  var _updating = false;
+
+  late final String? _current = PiRuntime.bundledVersion();
+  bool get _updateAvailable =>
+      _installed != null &&
+      PiRuntime.isNewerVersion(_latest ?? '', _installed!);
+
+  Future<void> _check() async {
+    setState(() {
+      _checking = true;
+      _error = null;
+    });
+    try {
+      final latest = await PiRuntime.latestVersion();
+      if (!mounted) return;
+      setState(() {
+        _latest = latest;
+        _checking = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$error';
+        _checking = false;
+      });
+    }
+  }
+
+  Future<void> _update() async {
+    final previous = _installed;
+    setState(() {
+      _updating = true;
+      _error = null;
+      _progress = 'Preparing update…';
+    });
+    try {
+      final version = await PiRuntime.updateBundled(
+        targetVersion: _latest,
+        onProgress: (message) {
+          if (mounted) setState(() => _progress = message);
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _latest = version;
+        _installed = version;
+        _progress = version == previous
+            ? 'Pi $version is already installed.'
+            : 'Pi $version will be used for new sessions.';
+        _updating = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$error';
+        _progress = null;
+        _updating = false;
+      });
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _installed = _current;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final current = _installed;
+    if (current == null) {
+      return Text(
+        'No bundled Pi runtime detected. This development build uses pi on PATH.',
+        style: theme.textTheme.bodySmall?.copyWith(color: theme.hintColor),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _latest == null
+                    ? 'Installed  ·  Pi $current'
+                    : _updateAvailable
+                    ? 'Pi $current  →  $_latest available'
+                    : 'Up to date  ·  Pi $current',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+            if (_updateAvailable)
+              FilledButton.tonalIcon(
+                onPressed: _updating ? null : _update,
+                icon: _updating
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.download_rounded, size: 16),
+                label: Text(_updating ? 'Updating…' : 'Update'),
+              )
+            else
+              TextButton.icon(
+                onPressed: _checking || _updating ? null : _check,
+                icon: Icon(_checking ? Icons.sync : Icons.refresh, size: 15),
+                label: Text(_checking ? 'Checking…' : 'Check now'),
+              ),
+          ],
+        ),
+        if (_progress != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 5),
+            child: Text(_progress!, style: theme.textTheme.labelSmall),
+          ),
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 5),
+            child: Text(
+              _error!,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
 
 class _NavTile extends StatefulWidget {
   const _NavTile({

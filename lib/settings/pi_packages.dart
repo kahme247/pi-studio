@@ -33,14 +33,23 @@ class PiCli {
   /// Testable bundled probe: node + `dist/bundle/cli.js` under [exeDir],
   /// else null. Shares the node lookup with `PiRuntime.bundledRoot` so there
   /// is exactly one place that knows the staged layout.
-  static (String, String)? bundledCliIn(String exeDir) {
+  static (String, String)? bundledCliIn(
+    String exeDir, {
+    String? updatesDirectory,
+  }) {
     final root = PiRuntime.bundledRoot(exeDir);
     if (root == null) return null;
+    final packageRoot =
+        PiRuntime.activePackageRootIn(
+          exeDir,
+          updatesDirectory: updatesDirectory,
+        ) ??
+        root;
     try {
       final sep = Platform.pathSeparator;
       final nodeName = Platform.isWindows ? 'node.exe' : 'node';
       final node = File('$root${sep}bin$sep$nodeName');
-      final cli = File('$root${sep}dist${sep}bundle${sep}cli.js');
+      final cli = File('$packageRoot${sep}dist${sep}bundle${sep}cli.js');
       if (node.existsSync() && cli.existsSync()) {
         return (node.path, cli.path);
       }

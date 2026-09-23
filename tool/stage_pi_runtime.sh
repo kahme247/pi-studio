@@ -4,6 +4,7 @@
 # see that file for the layout and rationale.
 #
 # Inputs (env): PI_STUDIO_PI_DIR, PI_STUDIO_NODE_EXE (same semantics).
+# Also set PI_STUDIO_NPM_DIR to the npm package directory from that Node install.
 #
 # Usage:
 #   flutter build linux --release
@@ -114,6 +115,13 @@ for dep in @earendil-works/chord jiti; do
   cp -r "$PI_DIR/node_modules/$dep" "$DEST/node_modules/$dep"
 done
 
+if [[ -z "${PI_STUDIO_NPM_DIR:-}" || ! -f "$PI_STUDIO_NPM_DIR/bin/npm-cli.js" ]]; then
+  echo "npm not found; set PI_STUDIO_NPM_DIR to the Node distribution npm directory" >&2
+  exit 1
+fi
+mkdir -p "$DEST/node_modules/npm"
+cp -r "$PI_STUDIO_NPM_DIR"/. "$DEST/node_modules/npm/"
+
 cp "$NODE_EXE" "$DEST/bin/node"
 chmod +x "$DEST/bin/node"
 
@@ -130,8 +138,13 @@ chmod +x "$DEST/bin/node"
   echo "staged cli.js failed to boot; see above" >&2
   exit 1
 }
+"$DEST/bin/node" "$DEST/node_modules/npm/bin/npm-cli.js" --version >/dev/null || {
+  echo "staged npm failed to boot; see above" >&2
+  exit 1
+}
 
 echo "$(grep -m1 '"name"' "$PI_DIR/package.json" | cut -d'"' -f4) $VERSION staged $(date -u +%FT%TZ) from $PI_DIR" > "$DEST/PI_VERSION"
 
 echo "Staged:"
-find "$DEST" -type f -printf '  %P  %.1f MB\n' | sort || find "$DEST" -type f | sort
+find "$DEST" -type f -printf '.' | wc -c | xargs printf '  %s files\n'
+du -sh "$DEST" | cut -f1 | xargs printf '  %s total\n'
