@@ -3,6 +3,22 @@
 All notable changes to Pi Studio are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-09-25
+
+### Added
+- In-app Pi runtime updates from Settings → About. Updates are downloaded with
+  the bundled npm runtime, version-checked and smoke-tested, then enabled for
+  new sessions while running sessions keep their current runtime.
+- Grouped project navigation and a refreshed session sidebar for easier project
+  switching.
+
+### Changed
+- Refreshed the app shell with a new brand mark, hero empty state, composer,
+  session chrome, and transcript presentation.
+- Reworked Settings into clearer groups and refreshed project navigation flows.
+- Release builds now resolve the npm `latest` Pi package once per workflow run
+  and bundle the same version on Windows and Linux.
+
 ## [1.0.1] - 2026-09-22
 
 ### Added
